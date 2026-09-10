@@ -1,0 +1,18 @@
+# entradas y salidas: no van al repo
+entradas/
+fotos/
+*.xls
+*.xlsx
+
+# entorno virtual
+venv/
+.venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# sistema
+.DS_Store
+Thumbs.db

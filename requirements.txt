@@ -1,0 +1,11 @@
+pandas>=2.0
+xlrd>=2.0          # lee los .xls legacy (Excel 97-2003). NO lee .xlsx
+openpyxl>=3.1      # por si alguna vez llega un .xlsx
+requests>=2.31
+Pillow>=10.0       # abrir, comparar y convertir las imagenes
+curl_cffi>=0.6     # imita la huella TLS de Chrome; sin esto, Lanidor y
+                   # Michael Kors responden con un bloqueo en vez de datos
+
+# La ventana (app.py) usa tkinter, que viene con Python y no se instala
+# con pip. En Windows y macOS ya esta. En Ubuntu/Debian, si falta:
+#     sudo apt install python3-tk

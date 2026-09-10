@@ -1,0 +1,87 @@
+# Genera la aplicacion para Windows y para Mac.
+#
+# Existe porque PyInstaller no cruza sistemas: para hacer un ejecutable de
+# Windows hay que compilarlo EN Windows, y uno de Mac EN Mac. Esto usa
+# maquinas de GitHub, asi que no hace falta tener ninguna de las dos.
+#
+# Se dispara en cada push a main, o a mano desde la pestana Actions.
+# Los resultados quedan para descargar en la pagina de esa ejecucion.
+
+name: Aplicacion
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      # --collect-all curl_cffi: se lleva el paquete ENTERO. Lleva una
+      #   libcurl compilada que PyInstaller no detecta solo, y sin ella
+      #   Lanidor y Michael Kors dejan de funcionar.
+      # --hidden-import: los modulos de marca se importan tarde (dentro de
+      #   una funcion), asi que se nombran para que no queden afuera.
+      - name: Generar el .exe
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed `
+            --name "Descarga de fotos" `
+            --collect-all curl_cffi `
+            --hidden-import runner --hidden-import comun `
+            --hidden-import geox --hidden-import lanidor `
+            --hidden-import hugo --hidden-import mk `
+            app.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Windows
+          path: dist/*.exe
+          retention-days: 90
+
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Generar la app
+        run: |
+          pyinstaller --noconfirm --clean --windowed \
+            --name "Descarga de fotos" \
+            --collect-all curl_cffi \
+            --hidden-import runner --hidden-import comun \
+            --hidden-import geox --hidden-import lanidor \
+            --hidden-import hugo --hidden-import mk \
+            app.py
+
+      # Se comprime a mano: subir un .app sin comprimir pierde los permisos
+      # de ejecucion y despues no abre.
+      - name: Comprimir
+        run: |
+          cd dist
+          zip -r -y "Descarga de fotos-mac.zip" "Descarga de fotos.app"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mac
+          path: dist/*.zip
+          retention-days: 90
