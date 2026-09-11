@@ -346,12 +346,17 @@ def main(argv=None):
 
     rep = pd.DataFrame(filas)
     destino, total, sin = comun.hoja_revision(rep, carpeta, carpeta.name)
+    xls, n_filas, n_prod = comun.excel_encontrados(args.excel, rep, carpeta,
+                                                   marca=args.marca)
 
     print(f"\n{'-' * 64}")
     print(f"  productos con fotos  : {(rep.n_fotos > 0).sum()} de {len(rep)}")
     print(f"  fotos guardadas      : {total}")
     print(f"  repetidas descartadas: {rep.repetidas.sum()}")
     print(f"  consultas al sitio   : {len(cache)}")
+    if xls:
+        print(f"  excel de encontrados : {xls.name}  "
+              f"({n_prod} productos, {n_filas} filas)")
     print(f"\n  Abri:  {destino.resolve()}")
 
 

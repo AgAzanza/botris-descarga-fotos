@@ -171,6 +171,7 @@ fotos/
 │   │   ├── D650ZB00022C4005.webp        la foto de portada
 │   │   ├── D650ZB00022C4005-1.webp
 │   │   └── D650ZB00022C4005-2.webp
+│   ├── encontrados.xlsx             <- el excel de los que sí salieron
 │   └── revision/                    <- material interno, no se entrega
 │       ├── revision.html                abrir esto para revisar
 │       └── reporte.csv
@@ -181,8 +182,21 @@ fotos/
 ```
 
 Cada marca tiene dos subcarpetas: `fotos/` con las imágenes y nada más, y
-`revision/` con el control interno. **Al cliente se le entrega solo la
-primera.**
+`revision/` con el control interno. **Al cliente se le entrega la carpeta
+`fotos/` y el archivo `encontrados.xlsx`.**
+
+### `encontrados.xlsx`
+
+Una copia del excel original con **solo las filas de los productos que sí
+bajaron fotos**, conservando todas sus columnas, sus nombres y su orden.
+
+No es un archivo nuevo armado con los datos del programa: se relee el
+original y se filtran sus filas. Por eso el cliente lo puede usar
+exactamente como usaría el que mandó él.
+
+Van **todas las tallas** de cada producto encontrado, no una fila por
+producto, porque quien lo recibe espera la misma estructura que envió. Y si
+un excel trae dos marcas, cada una recibe el suyo con sus propias filas.
 
 ### El nombre de archivo
 

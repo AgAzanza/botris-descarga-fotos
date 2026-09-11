@@ -157,6 +157,64 @@ def cargar(path, marca=None):
     return prod.reset_index(drop=True)
 
 
+def _columna_real(df, canonico):
+    """El nombre que tiene en ESTE excel una columna canonica."""
+    disponibles = {c.upper(): c for c in df.columns}
+    for alias in COLUMNAS.get(canonico, []):
+        real = disponibles.get(alias.upper())
+        if real is not None:
+            return real
+    return None
+
+
+def excel_encontrados(origen, rep, carpeta_marca, marca=None,
+                      nombre="encontrados.xlsx"):
+    """
+    Escribe un excel con las filas de los productos que SI bajaron fotos.
+
+    Se relee el archivo original y se filtran sus filas, en vez de armar uno
+    nuevo a partir de los datos que maneja el programa. De esa forma salen
+    TODAS las columnas tal cual venian, con sus nombres y su orden, y el
+    cliente puede usarlo como usaria el original.
+
+    Van todas las filas-talla de cada producto encontrado, no una por
+    producto: el que lo reciba espera la misma estructura que mando.
+
+    Devuelve (ruta, filas, productos) o (None, 0, 0) si no hubo ninguno.
+    """
+    if rep is None or len(rep) == 0 or "cod" not in rep.columns:
+        return None, 0, 0
+
+    n = pd.to_numeric(rep.get("n_fotos", 0), errors="coerce").fillna(0)
+    codigos = set(rep.loc[n > 0, "cod"].astype(str))
+    if not codigos:
+        return None, 0, 0
+
+    crudo = leer(origen)
+    col_codigo = _columna_real(crudo, "codigo")
+    col_talla = _columna_real(crudo, "talla")
+    if col_codigo is None or col_talla is None:
+        return None, 0, 0
+
+    cods = [codigo_producto(c, t)
+            for c, t in zip(crudo[col_codigo], crudo[col_talla])]
+    quedan = pd.Series(cods, index=crudo.index).isin(codigos)
+
+    # Si se paso la marca, solo sus filas: cada marca tiene su propio excel.
+    col_marca = _columna_real(crudo, "marca")
+    if marca and col_marca is not None:
+        quedan &= crudo[col_marca].astype(str).str.strip().str.upper() == marca.upper()
+
+    sub = crudo[quedan]
+    if len(sub) == 0:
+        return None, 0, 0
+
+    destino = Path(carpeta_marca) / nombre
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    sub.to_excel(destino, index=False)
+    return destino, len(sub), len(codigos)
+
+
 # ===========================================================================
 # COMPARACION DE FOTOS  (detectar repetidas)
 # ===========================================================================
