@@ -103,6 +103,10 @@ def nueva_sesion(cookies=None):
 MARCA = "LANI"
 CARPETA = "Lanidor"
 
+# Sufijo de los archivos de imagen (ver comun.nombre_foto).
+SUFIJO = "lanidor-ecuador"
+SUFIJOS = {"LANI": "lanidor-ecuador", "FUSTER": "fuster-ecuador"}
+
 BUSQUEDA = "https://www.lanidor.com/listaprodutos.aspx/getlistaProdutos"
 FICHA = "https://www.lanidor.com{path}"
 
@@ -283,6 +287,7 @@ def main(argv=None):
     if args.limite:
         prod = prod.head(args.limite)
 
+    sufijo = SUFIJOS.get(args.marca.upper(), f"{args.marca.lower()}-ecuador")
     carpeta = args.salida / (CARPETA if args.marca == MARCA else args.marca.title())
     carpeta.mkdir(parents=True, exist_ok=True)
 
@@ -297,8 +302,8 @@ def main(argv=None):
     for i, (_, p) in enumerate(prod.iterrows(), 1):
         cod, ref = p["cod"], p["referencia"]
 
-        if not args.forzar and comun.ya_bajado(carpeta, cod):
-            existentes = comun.archivos_de(carpeta, cod)
+        if not args.forzar and comun.ya_bajado(carpeta, cod, sufijo):
+            existentes = comun.archivos_de(carpeta, cod, sufijo)
             print(f"  {i:>3}/{len(prod)} [--] {cod:<16} ya estaba ({len(existentes)})")
             filas.append(_fila(p, existentes, 0, None))
             continue
@@ -334,7 +339,7 @@ def main(argv=None):
                 crudas.append((n, img))
 
         imagenes = comun.unicas(crudas)
-        nombres = comun.guardar(imagenes, carpeta, cod)
+        nombres = comun.guardar(imagenes, carpeta, cod, sufijo)
         repetidas = len(crudas) - len(imagenes)
 
         nota = f"{len(nombres)} fotos" if nombres else "sin fotos"

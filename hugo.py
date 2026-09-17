@@ -1,87 +1,86 @@
 #!/usr/bin/env python3
 """
-HUGO BOSS — baja las fotos de los productos de un excel de estructura.
-
-Cubre las dos marcas del archivo: HUGO y BOSS. Cada una va a su carpeta y
-tiene su propia hoja de revision.
+MICHAEL KORS — baja las fotos de los productos de un excel de estructura.
 
 
 QUE HACE ESTE PROGRAMA, EN CRIOLLO
 ==================================
 
-Por cada producto del excel:
+Por cada producto del excel le pregunta al sitio por esa variante concreta
+y se baja las fotos que le devuelve.
 
-  1. arma la direccion de su ficha en hugoboss.com
-  2. baja esa pagina y le saca la lista de fotos
-  3. baja cada foto y la guarda con el codigo del excel como nombre
-
-Nada mas. Los pasos 1 y 3 son especificos de esta marca y estan aca; leer
-el excel, comparar fotos repetidas y armar la hoja de revision es igual
-para todas las marcas y vive en comun.py.
+Leer el excel, comparar fotos repetidas y armar la hoja de revision es
+igual para todas las marcas y vive en comun.py.
 
 
-1. LA DIRECCION DE LA FICHA
----------------------------
-Se construye desde el excel, sin buscar nada:
+POR QUE NO SE PUEDE CONSTRUIR LA URL DE LA FOTO
+-----------------------------------------------
+Las fotos de MK llevan un identificador aleatorio en el medio:
 
-    hugoboss.com/hbeu{MATERIAL}_{COD.COLOR}.html
-                     \\____ las dos columnas del excel ____/
+    assets.michaelkors.com/transform/ECOM_Image_Zoom_Highres/
+        9c5f384e-0f9a-4f0e-88af-c815ee9b2de2/MT670N27R3-001-0001_1-tif
+        \\_________ esto no se deduce _________/\\__ esto si __/
 
-    material 50549243 + color 404  ->  hugoboss.com/hbeu50549243_404.html
-
-Si esa pagina no existe, el producto no esta publicado.
-
-
-2. LA LISTA DE FOTOS
---------------------
-Estan en el HTML de la ficha, sin JavaScript de por medio, y en el orden
-del carrusel. Se sacan con una busqueda de texto:
-
-    images.hugoboss.com/is/image/boss/hbeu50549243_404_350?...
-    images.hugoboss.com/is/image/boss/hbeu50549243_404_300?...
-    images.hugoboss.com/is/image/boss/hbeu50549243_404_360?...
-    ...
-
-EL ORDEN SE RESPETA: los sufijos se toman en el orden en que aparecen en
-el HTML, que es el del carrusel del sitio (para el Odeno2: 350, 300, 360,
-340, 341, 100 — y el sitio marca "1/6"). No se reordenan por numero. La
-foto que el sitio muestra primera es la que se guarda sin sufijo.
-
-POR QUE ASI Y NO PROBANDO NUMEROS: la primera version de este script
-adivinaba los sufijos probando de 10 en 10 del 0 al 500. Eran 51 pedidos
-por producto y ademas fallaba, porque este producto tiene una foto con
-sufijo 341, que no es multiplo de 10. Leer la ficha da la lista exacta,
-en el orden correcto, con un solo pedido.
+El nombre del archivo si sigue un patron, pero el UUID no. Hay que
+pedirle las URLs al sitio.
 
 
-3. LA DESCARGA
---------------
-Las fotos viven en Adobe Scene7, que las entrega al tamano que le pidas.
-Se le pide con fit=constrain, que significa "que entre en esta caja pero
-SIN agrandar". Como la caja es mas grande que cualquier original, lo que
-devuelve es el archivo tal cual.
+LA CONSULTA
+-----------
+MK corre sobre Salesforce Commerce Cloud, que expone las variantes en JSON:
 
-Medido sobre una foto real:
+    /on/demandware.store/Sites-mk_us-Site/en_US/Product-Variation
+        ?pid={REFERENCIA}&dwvar_{REFERENCIA}_color={COLOR}&quantity=1
 
-    wid=2000&fit=constrain   -> 1500 x 2275   <- el original
-    wid=1600 (como el sitio) -> 1600 x 2427   <- agrandada un 7%
-    hei=3000                 -> 1500 x 3000   <- estirada, todo relleno
+Los dos datos salen del excel. Un pedido por producto.
 
-O sea que la propia web entrega las fotos reescaladas. Nosotros bajamos
-el original.
+OJO CON EL COLOR: el codigo del excel no es el mismo que el del sitio, y la
+conversion NO es uniforme. Verificado a mano sobre MT670N27R3:
+
+    excel 001  ->  sitio 0001      (relleno con ceros)
+    excel 303  ->  sitio 3031      (NO es 0303)
+
+Por eso el script prueba primero el relleno con ceros y, si no acierta, usa
+la lista de colores que el propio sitio publica en variationAttributes.
+
+Esto importa porque cuando el color no coincide el servidor NO da error:
+devuelve las fotos del color por defecto, con codigo 200 y JSON valido. Y
+tampoco sirve mirar productType: MK contesta "master" igual cuando acierta.
+Lo unico que distingue es el nombre del archivo, que lleva el color adentro.
+
+Verificado a mano: pidiendo color=001 sobre MT670N27R3 devolvio
+"productType": "master" y fotos de "MT670N27R3-303-3031", o sea del color
+303. Un script ingenuo las hubiera guardado como si fueran del 001.
+
+Por eso hay DOS controles antes de guardar nada:
+
+  1. productType tiene que ser "variant", no "master"
+  2. el nombre del archivo tiene que contener -{COLOR}-
+
+Si alguno falla, el producto queda marcado como dudoso en la hoja de
+revision y no se guarda ninguna foto. Es preferible entregar un pendiente
+a entregar la foto del color equivocado.
+
+
+EL TAMANO
+---------
+El JSON devuelve la misma foto en varias medidas. Se usa zoomHiRes, que es
+la mas grande.
 
 
 USO
 ---
-    pip install pandas xlrd requests pillow
+    pip install pandas xlrd requests pillow curl_cffi
 
-    python hugo.py Hugo.xls --limite 3     # probar con 3 productos
-    python hugo.py Hugo.xls                # las dos marcas
-    python hugo.py Hugo.xls --marca BOSS   # solo una
+    python mk.py MK.xls --limite 3
+    python mk.py MK.xls
+
+    # ver que contesta el sitio para un producto, sin bajar nada:
+    python mk.py MK.xls --diagnostico MT670N27R3 001
 """
 
 import argparse
-import re
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -91,105 +90,239 @@ import comun
 
 
 # ===========================================================================
-# LO ESPECIFICO DE HUGO BOSS
+# SESION
+# ===========================================================================
+#
+# michaelkors.com responde 403 a requests pelado (lo mismo que Lanidor).
+# curl_cffi imita la huella TLS de Chrome y pasa.
+
+try:
+    from curl_cffi import requests as cffi
+    HAY_CFFI = True
+except ImportError:
+    HAY_CFFI = False
+
+
+def nueva_sesion():
+    if HAY_CFFI:
+        return cffi.Session(impersonate="chrome")
+    print("  aviso: curl_cffi no esta instalado y michaelkors.com devuelve\n"
+          "         403 sin el. Instalalo con:  pip install curl_cffi\n")
+    return requests.Session()
+
+
+# ===========================================================================
+# LO ESPECIFICO DE MICHAEL KORS
 # ===========================================================================
 
-MARCAS = ["HUGO", "BOSS"]
-CARPETAS = {"HUGO": "HUGO", "BOSS": "BOSS"}
+MARCA = "MK"
+CARPETA = "MichaelKors"
 
-# Prefijo del codigo web. Verificado en BOSS.
-PREFIJO = "hbeu"
+# Sufijo de los archivos de imagen (ver comun.nombre_foto).
+SUFIJO = "michaelkors-ecuador"
 
-FICHA = "https://www.hugoboss.com/{prefijo}{material}_{color}.html"
+BASE = "https://www.michaelkors.com"
+VARIACION = (BASE + "/on/demandware.store/Sites-mk_us-Site/en_US/"
+                    "Product-Variation")
+BUSCADOR = BASE + "/search?q={referencia}"
 
-# Para los productos que no aparecieron: el buscador del sitio con el codigo
-# de barra del excel. En Hugo Boss el EAN cae directo en el producto, asi
-# que es el mejor link para que el cliente compruebe por si mismo si el
-# articulo existe o no.
-BUSCADOR = "https://www.hugoboss.com/search?q={ean}"
-
-IMG = ("https://images.hugoboss.com/is/image/boss/"
-       "{prefijo}{material}_{color}_{sufijo}?wid={ancho}&fit=constrain")
-
-# Caja para pedirle la foto a Scene7. Es un TECHO, no un objetivo: con
-# fit=constrain el servidor no agranda, asi que devuelve el original.
-# 2000 alcanza de sobra (los originales miden ~1500 de ancho) y si algun
-# producto tuviera fotos mas grandes, tambien entran.
-MAX_ANCHO = 2000
+# Cual de los tamanos del JSON usamos, en orden de preferencia.
+TAMANOS = ["zoomHiRes", "zoom", "large", "base"]
 
 CABECERAS = {
     "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                    "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"),
-    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "X-Requested-With": "XMLHttpRequest",
+    "Referer": BASE + "/",
 }
 
 
-def url_ficha(material, color, prefijo=PREFIJO):
-    return FICHA.format(prefijo=prefijo, material=material, color=color)
-
-
-def url_foto(material, color, sufijo, prefijo=PREFIJO, ancho=MAX_ANCHO):
-    return IMG.format(prefijo=prefijo, material=material, color=color,
-                      sufijo=sufijo, ancho=ancho)
-
-
-def leer_ficha(material, color, sesion, prefijo=PREFIJO):
+def formas_color(cod_color):
     """
-    Baja la ficha y le saca dos cosas:
+    Las formas en que el sitio puede esperar el color, en orden de prueba.
 
-      sufijos : los numeros de foto de ESTE color, en orden de carrusel
-      colores : los colores que el sitio publica de este material, sacados
-                de los botoncitos de color (terminan en _SW). Sirve para
-                explicar por que un producto no aparecio.
+    No sabemos cual usa cada producto: el excel trae 001 y en la URL de la
+    ficha se vio 0001. En vez de elegir una y rezar, se prueban todas y se
+    usa la primera que devuelva una variante de verdad.
 
-    Devuelve (sufijos, colores, encontrada).
+    >>> formas_color("001")
+    ['0001', '001', '1']
     """
+    c = str(cod_color).strip()
+    formas = [c.zfill(4), c, c.lstrip("0") or "0"]
+    vistas, salida = set(), []
+    for f in formas:
+        if f not in vistas:
+            vistas.add(f)
+            salida.append(f)
+    return salida
+
+
+def slug(texto):
+    """'Georgette High-Low Skirt' -> 'georgette-high-low-skirt'"""
+    import re as _re, unicodedata as _u
+    t = _u.normalize("NFKD", str(texto))
+    t = "".join(c for c in t if not _u.combining(c)).lower()
+    return _re.sub(r"[^a-z0-9]+", "-", t).strip("-")
+
+
+def url_ficha(referencia, nombre=""):
+    """La ficha real. El slug sale del nombre que devuelve el propio JSON."""
+    s = slug(nombre)
+    return f"{BASE}/{s}/{referencia}.html" if s else f"{BASE}/{referencia}.html"
+
+
+def _pedir(referencia, color, sesion):
+    """Una consulta cruda. Devuelve el bloque 'product' o None."""
+    params = {"pid": referencia,
+              f"dwvar_{referencia}_color": color,
+              "quantity": 1}
     try:
-        r = sesion.get(url_ficha(material, color, prefijo),
-                       headers=CABECERAS, timeout=30, allow_redirects=True)
-    except requests.RequestException:
-        return [], [], False
+        r = sesion.get(VARIACION, params=params, headers=CABECERAS, timeout=30)
+    except Exception:
+        return None, "error de red"
     if r.status_code != 200:
-        return [], [], False
+        return None, f"HTTP {r.status_code}"
+    try:
+        datos = json.loads(r.text)
+    except Exception:
+        return None, "no devolvio JSON"
+    return (datos.get("product") or {}), None
 
-    html = r.text
 
-    # Fotos de este color. OJO: no alcanza con buscar el codigo, porque el
-    # mismo aparece antes en la etiqueta de compartir en redes:
-    #
-    #   <meta property="og:image" content=".../hbeu50549243_404_100?$social_sharing$">
-    #
-    # Esa esta ARRIBA de la galeria en el documento, asi que si se toma el
-    # orden crudo, la _100 queda primera cuando la portada real es la _350.
-    # Las de la galeria se reconocen por $re_fullPageZoom$ en la query.
-    patron = re.compile(
-        rf"/boss/{re.escape(prefijo)}{re.escape(str(material))}_"
-        rf"{re.escape(str(color))}_(\d+)([^\"'\s>)]*)")
+def _colores_de(prod):
+    for attr in prod.get("variationAttributes") or []:
+        if str(attr.get("id", "")).lower() == "color":
+            return [str(v.get("id") or v.get("value"))
+                    for v in attr.get("values") or []]
+    return []
 
-    galeria, otras = [], []
-    for m in patron.finditer(html):
-        sufijo, cola = m.group(1), m.group(2)
-        if "social_sharing" in cola:
+
+def _fotos_de(prod, cod_color):
+    """URLs del tamano mas grande, quedandose solo con las de este color."""
+    imagenes = prod.get("images") or {}
+    lote = next((imagenes[t] for t in TAMANOS if imagenes.get(t)), [])
+    urls = [im.get("url") for im in lote if im.get("url")]
+    marca = f"-{str(cod_color).strip()}-"
+    return [u for u in urls if marca in u], urls
+
+
+def candidatos(cod_color, publicados):
+    """
+    Que valor de color mandarle al sitio, en orden de prueba.
+
+    Primero el relleno con ceros, que es el caso comun (001 -> 0001). Si eso
+    no acierta, se usa la lista de colores que el propio sitio publica, que
+    llega en variationAttributes. Hace falta porque el formato NO es
+    uniforme: verificado a mano, el color 001 del excel es 0001 en el sitio,
+    pero el 303 es 3031 y no 0303.
+
+    >>> candidatos("001", ["3031", "0001"])
+    ['0001', '3031']
+    >>> candidatos("303", ["3031", "0001"])
+    ['0303', '3031', '0001']
+    """
+    c = str(cod_color).strip()
+    orden = [c.zfill(4)]
+
+    def puntaje(pid):
+        if pid == c.zfill(4):
+            return 0
+        if pid.lstrip("0") == c.lstrip("0"):
+            return 1
+        if pid.startswith(c):
+            return 2
+        if pid.endswith(c):
+            return 3
+        return 4
+
+    orden += sorted(publicados or [], key=puntaje)
+
+    vistos, salida = set(), []
+    for x in orden:
+        if x and x not in vistos:
+            vistos.add(x)
+            salida.append(x)
+    return salida
+
+
+def consultar(referencia, cod_color, sesion):
+    """
+    Pide la variante y se queda con las fotos SOLO si son del color pedido.
+
+    La prueba de que acerto NO es el productType: verificado a mano, MK
+    responde "master" incluso cuando devuelve las fotos correctas. Lo que
+    distingue es el nombre del archivo, que lleva el color adentro:
+
+        color=0001 -> MT670N27R3-001-0001_1-tif   <- del color 001, sirve
+        color=001  -> MT670N27R3-303-3031_1-tif   <- del color por defecto
+
+    Devuelve (urls, colores_publicados, nombre_producto, problema).
+    """
+    colores, nombre, ultimo = [], "", "No se obtuvo respuesta del sitio."
+    probados = set()
+    pendientes = candidatos(cod_color, [])
+
+    while pendientes:
+        color = pendientes.pop(0)
+        if color in probados:
             continue
-        (galeria if "re_fullPageZoom" in cola else otras).append(sufijo)
+        probados.add(color)
 
-    def sin_repetir(lista):
-        vistos, salida = set(), []
-        for s in lista:
-            if s not in vistos:
-                vistos.add(s)
-                salida.append(s)
-        return salida
+        prod, err = _pedir(referencia, color, sesion)
+        comun.time.sleep(comun.ESPERA)
+        if prod is None:
+            ultimo = f"El sitio respondio mal ({err})."
+            continue
 
-    # Si algun dia cambian el nombre del preset, se usa lo que haya.
-    sufijos = sin_repetir(galeria) or sin_repetir(otras)
+        nombre = prod.get("productName") or nombre
 
-    # Colores publicados: hbeu50549243_001_SW
-    swatch = re.compile(
-        rf"{re.escape(prefijo)}{re.escape(str(material))}_(\d+)_SW")
-    colores = sorted(set(swatch.findall(html)))
+        # La primera respuesta nos dice que colores existen de verdad; con
+        # eso se rearma la cola en vez de seguir adivinando.
+        nuevos = _colores_de(prod)
+        if nuevos and not colores:
+            colores = nuevos
+            for c in candidatos(cod_color, colores):
+                if c not in probados and c not in pendientes:
+                    pendientes.append(c)
 
-    return sufijos, colores, True
+        correctas, todas = _fotos_de(prod, cod_color)
+        if correctas:
+            return correctas, colores, nombre, None
+        if todas:
+            ultimo = (f"El sitio devolvio fotos de otro color "
+                      f"(ejemplo: {todas[0].rsplit('/', 1)[-1]}).")
+        else:
+            ultimo = "El producto existe pero no trae fotos."
+
+    if colores:
+        ultimo += f" Colores publicados: {', '.join(colores)}."
+    return [], colores, nombre, ultimo
+
+
+def diagnostico(referencia, cod_color, sesion):
+    """Muestra crudo lo que contesta el sitio, para un solo producto."""
+    print(f"\n  referencia {referencia}   color del excel {cod_color}\n")
+    prod0, _ = _pedir(referencia, str(cod_color).strip().zfill(4), sesion)
+    publicados = _colores_de(prod0) if prod0 else []
+    for color in candidatos(cod_color, publicados):
+        prod, err = _pedir(referencia, color, sesion)
+        if prod is None:
+            print(f"  color={color:<6} -> {err}")
+            continue
+        _, todas = _fotos_de(prod, cod_color)
+        correctas, _ = _fotos_de(prod, cod_color)
+        veredicto = "SIRVE" if correctas else "no es este color"
+        print(f"  color={color:<6} -> {veredicto}"
+              f"   (productType={prod.get('productType')!r}, no es el criterio)")
+        print(f"                  nombre  : {prod.get('productName')}")
+        print(f"                  colores : {', '.join(_colores_de(prod)) or '(ninguno)'}")
+        print(f"                  fotos   : {len(todas)}"
+              + (f"  ej: {todas[0].rsplit('/', 1)[-1]}" if todas else ""))
+        print(f"                  ficha   : {url_ficha(referencia, prod.get('productName',''))}")
+        print()
+        comun.time.sleep(comun.ESPERA)
 
 
 # ===========================================================================
@@ -199,121 +332,103 @@ def leer_ficha(material, color, sesion, prefijo=PREFIJO):
 def main(argv=None):
     """argv=None usa la linea de comandos; una lista permite llamarlo
     desde codigo (lo hace runner.py cuando corre dentro del .exe)."""
-    ap = argparse.ArgumentParser(description="Baja las fotos de HUGO y BOSS.")
+    ap = argparse.ArgumentParser(description="Baja las fotos de Michael Kors.")
     ap.add_argument("excel", type=Path)
     ap.add_argument("--salida", type=Path, default=Path("fotos"))
     ap.add_argument("--limite", type=int, default=None)
-    ap.add_argument("--marca", default=None, help="HUGO o BOSS. Por defecto, las dos.")
-    ap.add_argument("--prefijo", default=PREFIJO)
-    ap.add_argument("--ancho", type=int, default=MAX_ANCHO,
-                    help="techo de tamano; no agranda (por defecto 2000)")
     ap.add_argument("--forzar", action="store_true")
+    ap.add_argument("--diagnostico", nargs=2, metavar=("REFERENCIA", "COLOR"),
+                    help="muestra que contesta el sitio para un solo producto "
+                         "y no baja nada")
     args = ap.parse_args(argv)
 
-    marcas = [args.marca.upper()] if args.marca else MARCAS
-    sesion = requests.Session()
-    hubo = False
+    if args.diagnostico:
+        diagnostico(args.diagnostico[0], args.diagnostico[1], nueva_sesion())
+        return
 
-    for marca in marcas:
-        prod = comun.cargar(args.excel, marca=marca)
-        if len(prod) == 0:
-            continue
-        hubo = True
-        if args.limite:
-            prod = prod.head(args.limite)
-
-        carpeta = args.salida / CARPETAS.get(marca, marca)
-        carpeta.mkdir(parents=True, exist_ok=True)
-        print(f"\n{marca}: {len(prod)} productos -> {carpeta}/")
-        print("un pedido a la ficha por producto\n")
-
-        filas = []
-        for i, (_, p) in enumerate(prod.iterrows(), 1):
-            cod, mat, col = p["cod"], p["referencia"], p["cod_color"]
-
-            if not args.forzar and comun.ya_bajado(carpeta, cod):
-                existentes = comun.archivos_de(carpeta, cod)
-                print(f"  {i:>3}/{len(prod)} [--] {cod:<16} ya estaba ({len(existentes)})")
-                filas.append(_fila(p, existentes, 0, [], args))
-                continue
-
-            sufijos, colores, existe = leer_ficha(mat, col, sesion, args.prefijo)
-            comun.time.sleep(comun.ESPERA)
-
-            nota = ""
-            if not existe:
-                nota = "La ficha no existe en hugoboss.com. Producto no publicado."
-            elif not sufijos:
-                nota = (f"La ficha abre pero no tiene fotos del color {col}."
-                        + (f" Colores publicados de este material: "
-                           f"{', '.join(colores)}." if colores else ""))
-
-            crudas = []
-            for n, s in enumerate(sufijos):
-                img = comun.bajar(url_foto(mat, col, s, args.prefijo, args.ancho),
-                                  sesion)
-                if img is not None:
-                    crudas.append((n, img))          # n = orden del carrusel
-
-            imagenes = comun.unicas(crudas)
-            nombres = comun.guardar(imagenes, carpeta, cod)
-            repetidas = len(crudas) - len(imagenes)
-
-            detalle = f"{len(nombres)} fotos" if nombres else (nota or "sin fotos")
-            if repetidas:
-                detalle += f"  ({repetidas} repetidas descartadas)"
-            print(f"  {i:>3}/{len(prod)} {'[ok]' if nombres else '[!!]'} {cod:<16} {detalle}")
-
-            filas.append(_fila(p, nombres, repetidas, sufijos, args, nota))
-
-        rep = pd.DataFrame(filas)
-        destino, total, sin = comun.hoja_revision(rep, carpeta, carpeta.name)
-        xls, n_filas, n_prod = comun.excel_encontrados(args.excel, rep, carpeta,
-                                                       marca=marca)
-
-        print(f"\n{'-' * 64}")
-        print(f"  {marca}: {(rep.n_fotos > 0).sum()} de {len(rep)} con fotos, "
-              f"{total} fotos, {rep.repetidas.sum()} repetidas")
-        if xls:
-            print(f"  excel de encontrados: {xls.name}  "
-                  f"({n_prod} productos, {n_filas} filas)")
-        print(f"  Abri:  {destino.resolve()}")
-
-    if not hubo:
+    prod = comun.cargar(args.excel, marca=MARCA)
+    if len(prod) == 0:
         todas = comun.cargar(args.excel)["marca"].unique()
-        print(f"El excel no tiene productos {marcas}. Marcas: {list(todas)}")
+        print(f"El excel no tiene productos {MARCA}. Marcas: {list(todas)}")
+        return
+    if args.limite:
+        prod = prod.head(args.limite)
+
+    carpeta = args.salida / CARPETA
+    carpeta.mkdir(parents=True, exist_ok=True)
+    print(f"\n{MARCA}: {len(prod)} productos -> {carpeta}/")
+    print("una consulta por producto\n")
+
+    sesion = nueva_sesion()
+    filas = []
+
+    for i, (_, p) in enumerate(prod.iterrows(), 1):
+        cod, ref, col = p["cod"], p["referencia"], p["cod_color"]
+
+        if not args.forzar and comun.ya_bajado(carpeta, cod, SUFIJO):
+            existentes = comun.archivos_de(carpeta, cod, SUFIJO)
+            print(f"  {i:>3}/{len(prod)} [--] {cod:<16} ya estaba ({len(existentes)})")
+            filas.append(_fila(p, existentes, 0, [], "", ""))
+            continue
+
+        urls, colores, nombre_web, problema = consultar(ref, col, sesion)
+
+        crudas = []
+        for n, url in enumerate(urls):
+            img = comun.bajar(url, sesion)
+            if img is not None:
+                crudas.append((n, img))       # n = orden del carrusel
+
+        imagenes = comun.unicas(crudas)
+        nombres = comun.guardar(imagenes, carpeta, cod, SUFIJO)
+        repetidas = len(crudas) - len(imagenes)
+
+        detalle = f"{len(nombres)} fotos" if nombres else (problema or "sin fotos")
+        if repetidas:
+            detalle += f"  ({repetidas} repetidas descartadas)"
+        print(f"  {i:>3}/{len(prod)} {'[ok]' if nombres else '[!!]'} {cod:<16} {detalle[:70]}")
+
+        filas.append(_fila(p, nombres, repetidas, urls, problema or "", nombre_web))
+
+    rep = pd.DataFrame(filas)
+    destino, total, sin = comun.hoja_revision(rep, carpeta, CARPETA)
+    xls, n_filas, n_prod = comun.excel_encontrados(args.excel, rep, carpeta,
+                                                   marca=MARCA)
+
+    print(f"\n{'-' * 64}")
+    print(f"  productos con fotos  : {(rep.n_fotos > 0).sum()} de {len(rep)}")
+    print(f"  fotos guardadas      : {total}")
+    print(f"  repetidas descartadas: {rep.repetidas.sum()}")
+    if xls:
+        print(f"  excel de encontrados : {xls.name}  "
+              f"({n_prod} productos, {n_filas} filas)")
+    print(f"\n  Abri:  {destino.resolve()}")
 
 
-def _fila(p, nombres, repetidas, sufijos, args, nota=""):
-    mat, col = p["referencia"], p["cod_color"]
-    ean = str(p.get("ean", "") or "").strip()
-
-    # Con fotos, el link va a la ficha. Sin fotos, la ficha no sirve de nada
-    # (o no existe), asi que va al buscador con el codigo de barra.
-    if nombres or not ean:
-        url_producto = url_ficha(mat, col, args.prefijo)
-        etiqueta = "Ver la ficha en hugoboss.com"
+def _fila(p, nombres, repetidas, urls, nota, nombre_web=""):
+    ref = p.get("referencia", "")
+    if nombres:
+        # la ficha real; el slug sale del nombre que devolvio el JSON
+        url_producto = url_ficha(ref, nombre_web or p.get("nombre", ""))
+        etiqueta = "Ver la ficha en michaelkors.com"
     else:
-        url_producto = BUSCADOR.format(ean=ean)
-        etiqueta = f"Buscar el codigo de barra {ean}"
+        url_producto = BUSCADOR.format(referencia=ref)
+        etiqueta = f"Buscar la referencia {ref}"
 
     return {
         "cod": p["cod"],
         "nombre": p.get("nombre", ""),
         "color": p.get("color", ""),
-        "referencia": mat,
-        "cod_color": col,
+        "referencia": ref,
+        "cod_color": p.get("cod_color", ""),
         "tallas": p.get("tallas", ""),
         "n_fotos": len(nombres),
         "repetidas": repetidas,
         "archivos": " ".join(nombres),
-        "sufijos": " ".join(sufijos),
         "nota": nota,
-        "ean": ean,
         "url_producto": url_producto,
         "label_producto": etiqueta,
-        "url_foto1": (url_foto(mat, col, sufijos[0], args.prefijo, args.ancho)
-                      if sufijos else ""),
+        "url_foto1": urls[0] if urls else "",
     }
 
 

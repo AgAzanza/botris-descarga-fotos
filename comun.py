@@ -327,15 +327,40 @@ def carpeta_fotos(carpeta_marca):
     return Path(carpeta_marca) / CARPETA_FOTOS
 
 
-def guardar(imagenes, carpeta_marca, codigo, calidad=90):
+def nombre_foto(codigo, indice=0, sufijo="", ext="webp"):
+    """
+    El nombre de archivo de una foto.
+
+        indice 0 ->  D650ZB00022C4005-geox-ecuador.webp
+        indice 1 ->  D650ZB00022C4005-1-geox-ecuador.webp
+
+    El sufijo de marca va AL FINAL y el numero de foto en el medio. No es
+    un capricho: es el formato que espera el archivo de carga de
+    WooCommerce, asi que el archivo que se sube y la URL que va al CSV son
+    exactamente el mismo texto, sin renombrar nada en el medio.
+
+    >>> nombre_foto("405608188", 0, "lanidor-ecuador")
+    '405608188-lanidor-ecuador.webp'
+    >>> nombre_foto("405608188", 2, "lanidor-ecuador")
+    '405608188-2-lanidor-ecuador.webp'
+    >>> nombre_foto("405608188", 1)
+    '405608188-1.webp'
+    """
+    partes = [str(codigo)]
+    if indice:
+        partes.append(str(indice))
+    if sufijo:
+        partes.append(str(sufijo))
+    return "-".join(partes) + "." + ext
+
+
+def guardar(imagenes, carpeta_marca, codigo, sufijo="", calidad=90):
     """
     Guarda las fotos de un producto en la subcarpeta de imagenes.
 
-    La PRINCIPAL va sin sufijo; las demas numeradas desde -1:
-
-        fotos/Geox/fotos/D650ZB00022C4005.webp      <- principal
-        fotos/Geox/fotos/D650ZB00022C4005-1.webp
-        fotos/Geox/fotos/D650ZB00022C4005-2.webp
+        fotos/Geox/fotos/D650ZB00022C4005-geox-ecuador.webp      <- principal
+        fotos/Geox/fotos/D650ZB00022C4005-1-geox-ecuador.webp
+        fotos/Geox/fotos/D650ZB00022C4005-2-geox-ecuador.webp
     """
     if not imagenes:
         return []
@@ -343,18 +368,17 @@ def guardar(imagenes, carpeta_marca, codigo, calidad=90):
     cp.mkdir(parents=True, exist_ok=True)
     nombres = []
     for n, img in enumerate(imagenes):
-        sufijo = "" if n == 0 else f"-{n}"
-        destino = cp / f"{codigo}{sufijo}.webp"
+        destino = cp / nombre_foto(codigo, n, sufijo)
         img.convert("RGB").save(destino, "WEBP", quality=calidad)
         nombres.append(destino.name)
     return nombres
 
 
-def ya_bajado(carpeta_marca, codigo):
-    return (carpeta_fotos(carpeta_marca) / f"{codigo}.webp").exists()
+def ya_bajado(carpeta_marca, codigo, sufijo=""):
+    return (carpeta_fotos(carpeta_marca) / nombre_foto(codigo, 0, sufijo)).exists()
 
 
-def archivos_de(carpeta_marca, codigo):
+def archivos_de(carpeta_marca, codigo, sufijo=""):
     """
     Las fotos ya bajadas de un producto, en orden: la principal primero.
 
@@ -362,14 +386,50 @@ def archivos_de(carpeta_marca, codigo):
     las de otro producto cuyo codigo empiece igual.
     """
     cp = carpeta_fotos(carpeta_marca)
+
+    # Si no estan con el sufijo, se buscan sin el: las fotos bajadas antes de
+    # que existiera el sufijo se llaman {codigo}.webp a secas y no hay motivo
+    # para obligar a rebajarlas.
+    usar = sufijo
+    if sufijo and not (cp / nombre_foto(codigo, 0, sufijo)).exists() \
+            and (cp / nombre_foto(codigo, 0, "")).exists():
+        usar = ""
+
     salida = []
-    if (cp / f"{codigo}.webp").exists():
-        salida.append(f"{codigo}.webp")
+    if (cp / nombre_foto(codigo, 0, usar)).exists():
+        salida.append(nombre_foto(codigo, 0, usar))
     n = 1
-    while (cp / f"{codigo}-{n}.webp").exists():
-        salida.append(f"{codigo}-{n}.webp")
+    while (cp / nombre_foto(codigo, n, usar)).exists():
+        salida.append(nombre_foto(codigo, n, usar))
         n += 1
     return salida
+
+
+def renombrar_con_sufijo(carpeta_marca, sufijo):
+    """
+    Le agrega el sufijo de marca a las fotos que no lo tengan.
+
+    Para las fotos bajadas antes de que el sufijo existiera: evita tener que
+    volver a descargarlas solo por el nombre.
+
+    Devuelve (renombradas, ya_estaban).
+    """
+    cp = carpeta_fotos(carpeta_marca)
+    if not cp.exists() or not sufijo:
+        return 0, 0
+
+    hechas = saltadas = 0
+    for f in sorted(cp.glob("*.webp")):
+        if f.stem.endswith(sufijo):
+            saltadas += 1
+            continue
+        destino = cp / f"{f.stem}-{sufijo}.webp"
+        if destino.exists():
+            saltadas += 1
+            continue
+        f.rename(destino)
+        hechas += 1
+    return hechas, saltadas
 
 
 # ===========================================================================

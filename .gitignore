@@ -4,6 +4,11 @@ fotos/
 *.xls
 *.xlsx
 
+# la clave de la API, nunca al repositorio
+.env
+.cache-claude/
+ids.json
+
 # entorno virtual
 venv/
 .venv/
@@ -15,4 +20,4 @@ __pycache__/
 
 # sistema
 .DS_Store
-Thumbs.dbs
+Thumbs.db

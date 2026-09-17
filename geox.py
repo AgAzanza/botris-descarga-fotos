@@ -82,6 +82,10 @@ import comun
 MARCA = "GEOX"
 CARPETA = "Geox"
 
+# Sufijo que llevan los archivos de imagen. Sale del formato que espera el
+# archivo de carga de WooCommerce: {codigo}-{sufijo}.webp
+SUFIJO = "geox-ecuador"
+
 FICHA = "https://www.geox.com/{locale}/{cod}.html"
 LOCALE = "en-RU"
 
@@ -226,8 +230,8 @@ def main(argv=None):
     for i, (_, p) in enumerate(prod.iterrows(), 1):
         cod = p["cod"]
 
-        if not args.forzar and comun.ya_bajado(carpeta, cod):
-            existentes = comun.archivos_de(carpeta, cod)
+        if not args.forzar and comun.ya_bajado(carpeta, cod, SUFIJO):
+            existentes = comun.archivos_de(carpeta, cod, SUFIJO)
             print(f"  {i:>3}/{len(prod)} [--] {cod:<20} ya estaba ({len(existentes)})")
             filas.append(_fila(p, existentes, 0, [], args))
             continue
@@ -249,7 +253,7 @@ def main(argv=None):
                 crudas.append((n, img))       # n = orden del carrusel
 
         imagenes = comun.unicas(crudas)
-        nombres = comun.guardar(imagenes, carpeta, cod)
+        nombres = comun.guardar(imagenes, carpeta, cod, SUFIJO)
         repetidas = len(crudas) - len(imagenes)
 
         detalle = f"{len(nombres)} fotos" if nombres else (nota or "sin fotos")

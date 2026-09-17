@@ -213,8 +213,19 @@ Es el código completo del excel sin la talla y sin puntos:
 Las siete tallas de un mismo zapato dan el mismo nombre, que es de donde
 sale el ahorro de búsquedas.
 
-La portada va sin sufijo y las demás numeradas desde `-1`, **en el orden del
-carrusel del sitio**, no por número interno.
+La portada va sin número y las demás desde `-1`, **en el orden del carrusel
+del sitio**, no por número interno. Al final va el sufijo de la marca:
+
+```
+D650ZB00022C4005-geox-ecuador.webp        la portada
+D650ZB00022C4005-1-geox-ecuador.webp
+405608188-2-lanidor-ecuador.webp
+```
+
+El sufijo está ahí porque es el formato que espera el archivo de carga de
+WooCommerce: así **el archivo que se sube al servidor y la URL que va en el
+xlsx son exactamente el mismo texto**, sin renombrar nada en el medio. Cada
+marca define el suyo en su archivo (`SUFIJO`).
 
 > **Ojo con el orden de las operaciones**: primero se quitan puntos y barras,
 > después se recorta la talla. Al revés falla, porque Geox escribe `36.5` en
@@ -328,6 +339,116 @@ Corre sobre Salesforce Commerce Cloud. Se consulta la variante:
 
 ---
 
+## El archivo para WooCommerce
+
+Segunda mitad del trabajo: convertir el excel de la marca en el xlsx que se
+sube a la tienda.
+
+```bash
+python woocommerce.py fotos/Geox/encontrados.xlsx --marca GEOX
+```
+
+Sirve tanto el excel original de la marca como el `encontrados.xlsx` que
+dejó la descarga — tienen las mismas columnas.
+
+### Qué produce
+
+Una fila **padre** por referencia, con todas las tallas y colores juntos
+separados por `|`, seguida de una fila por cada variación:
+
+| ID | SKU | Type | Parent | Talla | Color |
+|---|---|---|---|---|---|
+| 300036789 | `D650ZB00022` | variable | | `35\|36\|36.5\|37` | `Azul\|Crema` |
+| 300036790 | `D650ZB00022C400535` | variable | `D650ZB00022` | `35` | `Azul` |
+
+El SKU de cada variación es el código original tal cual viene del excel, con
+la talla y con sus puntos si los tiene (Lanidor: `405608.188.L`). Los
+productos de una sola fila salen como `simple`.
+
+### Las imágenes salen de los archivos reales
+
+Es la diferencia más grande con el sistema anterior, que armaba las URLs por
+convención y asumía **siempre tres fotos** por producto: con dos, la tienda
+quedaba con una imagen rota; con ocho, se perdían cinco.
+
+Como las fotos ya se bajaron, las URLs salen de los archivos que existen en
+disco. Ni una de más ni una de menos.
+
+Si las fotos se bajaron antes de que existiera el sufijo, las encuentra
+igual. Para dejarlas con el nombre definitivo, una vez:
+
+```bash
+python woocommerce.py encontrados.xlsx --marca GEOX --renombrar-fotos
+```
+
+### La validación
+
+Antes de escribir nada, revisa el resultado. Si encuentra algo grave **no
+genera el archivo**.
+
+Existe por un error real del sistema anterior: cinco productos de Geox
+salieron con quince variaciones, las tallas repetidas tres veces (tres
+colorways del mismo modelo) y el atributo de color vacío. WooCommerce no
+puede distinguirlas. El archivo se generó igual, con estadísticas que decían
+que estaba todo bien.
+
+Lo que revisa: variaciones con la misma combinación talla+color bajo un
+padre, SKUs repetidos, IDs repetidos, filas sin precio y filas sin categoría.
+Las dos últimas son avisos, no cortan.
+
+### Los IDs
+
+WooCommerce necesita un ID único por fila que **no se repita nunca** entre
+corridas. Se llevan en `ids.json`, y se reservan en bloque *antes* de
+usarlos: si el programa se corta a la mitad, esos números quedan quemados.
+Perder números no cuesta nada; repetirlos rompe la carga.
+
+Si dos personas generan archivos, hay que compartir el contador o se pisan:
+
+```bash
+python woocommerce.py ... --ids "/ruta/a/Drive/ids.json"
+```
+
+---
+
+## La clave de Claude
+
+Las marcas no mandan siempre el mismo excel: cambian los títulos de las
+columnas entre envíos, y los colores y materiales vienen en el idioma de
+cada una y con formatos como `003% Spandex; 097% Cotone;`. Por eso esa parte
+la resuelve Claude en vez de reglas fijas.
+
+Se configura una vez:
+
+```bash
+cp .env.ejemplo .env
+```
+
+y dentro se reemplaza `sk-ant-...` por la clave real, que se saca de
+[console.anthropic.com](https://console.anthropic.com) → API Keys. El
+archivo empieza con punto, así que el explorador lo esconde (`Ctrl+H` en
+Linux). Está en el `.gitignore` y **no puede quedar dentro del `.exe`**: va
+al lado del ejecutable y cada máquina configura la suya.
+
+Sin clave todo funciona salvo las traducciones: los colores salen como
+vienen (`Avio`, `Cream`) en vez de traducidos. Con `--sin-ia` ni siquiera lo
+intenta.
+
+### Qué se hace para que salga barato
+
+- **Modelo Haiku**, el más económico. La tarea es clasificar columnas y
+  traducir palabras sueltas.
+- **Caché en disco** (`.cache-claude/`): la estructura de un formato de
+  archivo se consulta una vez y no se vuelve a preguntar. Los colores se
+  cachean **de a uno**, así un archivo nuevo de la misma marca solo paga los
+  que no vio antes.
+- **Solo valores únicos**: ocho filas de muestra, no las dos mil.
+- **Por lotes de 120**: el sistema anterior pedía todas las traducciones
+  juntas con un tope de 2.000 tokens, y con archivos grandes la respuesta se
+  cortaba a la mitad dejando un JSON roto.
+
+---
+
 ## Cuando algo se rompe
 
 Estos scripts dependen de cómo están hechos los sitios hoy. Cuando una
@@ -350,6 +471,9 @@ Errores frecuentes:
 | `externally-managed-environment` al instalar | Falta activar el entorno virtual |
 | `No module named 'tkinter'` | `sudo apt install python3-tk` y **rehacer el `venv`**: el entorno se creó sin él y no lo ve |
 | El `.sh` se abre en el editor de texto | Normal en Linux. Correr `./iniciar.sh` una vez y usar el acceso del menú |
+| Los colores salen en inglés | Falta el `.env` con la clave de Claude |
+| `woocommerce.py` dice "sin fotos" en todo | La carpeta de `--fotos` no es la correcta |
+| No genera el xlsx y muestra GRAVE | Es la validación: subirlo así rompería productos |
 | Todos los productos "sin fotos" | El sitio cambió, o falta `curl_cffi` |
 | "Just a moment..." | Cloudflare. Instalar `curl_cffi` o usar `--cookies` |
 | Faltan fotos de un producto | `--diagnostico` en Geox y MK dice cuál y por qué |
@@ -387,6 +511,9 @@ repetidas, la hoja de revisión— ya está en `comun.py` y no hay que tocarlo.
 ├── lanidor.py
 ├── hugo.py            HUGO y BOSS
 ├── mk.py
+├── woocommerce.py     arma el archivo de carga de la tienda
+├── claude.py          detecta columnas y traduce colores (con cache)
+├── .env.ejemplo       plantilla para la clave de Claude
 ├── requirements.txt
 └── README.md
 ```
