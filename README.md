@@ -365,6 +365,21 @@ El SKU de cada variación es el código original tal cual viene del excel, con
 la talla y con sus puntos si los tiene (Lanidor: `405608.188.L`). Los
 productos de una sola fila salen como `simple`.
 
+**El color sigue reglas distintas en el padre y en las variaciones.**
+
+En el **padre**, la lista de colores solo si hay **dos o más**. Con uno solo
+va en blanco, porque agrupa por referencia y ese dato no distingue nada.
+
+En cada **variación**, su color **siempre**, aunque todas las del grupo sean
+del mismo. Acá el sistema anterior se equivocaba: aplicaba la condición del
+padre también a los hijos, y como la mayoría de las referencias tienen un
+único color (23 de 25 en Hugo, 27 de 33 en Geox), las variaciones quedaban
+sin color casi siempre. Su archivo de Geox salió con **cero colores en 244
+filas**.
+
+Se escribe en **CSV**, con el mismo formato que los archivos que ya se
+suben: sin BOM, separador coma, fin de línea CRLF y UTF-8.
+
 ### Las imágenes salen de los archivos reales
 
 Es la diferencia más grande con el sistema anterior, que armaba las URLs por
@@ -396,12 +411,51 @@ Lo que revisa: variaciones con la misma combinación talla+color bajo un
 padre, SKUs repetidos, IDs repetidos, filas sin precio y filas sin categoría.
 Las dos últimas son avisos, no cortan.
 
+### Si un archivo llega con otros encabezados
+
+Los cuatro programas de descarga leen el excel con una lista fija de alias
+(`COLUMNAS` en `comun.py`). Cubre los archivos conocidos y no cuesta nada,
+pero las marcas cambian los títulos entre envíos.
+
+Cuando falta alguna columna **obligatoria**, se le pregunta a Claude en vez
+de cortar:
+
+```
+  columnas sin reconocer ['codigo', 'talla']: preguntando a Claude...
+  Claude identifico: {'codigo': 'Cod. Articulo', 'talla': 'Tamano'}
+```
+
+Solo se activa ante el fallo, así que en los archivos que hoy funcionan no
+hay ninguna llamada. Y la respuesta queda cacheada contra los encabezados:
+el mismo formato raro se consulta una sola vez.
+
+Sin clave configurada, el error dice qué columnas no reconoció y cuáles
+tiene el archivo, para poder agregarlas a mano a `COLUMNAS`.
+
+### Cuidado con los nombres de columna
+
+La detección prueba primero los alias conocidos y después busca por patrón,
+**salteando las columnas que ya tienen otro rol asignado**. Hace falta
+porque en el excel de Hugo la columna llamada `MATERIAL` no es el material:
+es la referencia del producto, y la composición está en `ART_COMPO_VESTI`.
+Sin esa precaución, la columna de material del CSV se llenaría con códigos.
+
 ### Los IDs
 
 WooCommerce necesita un ID único por fila que **no se repita nunca** entre
 corridas. Se llevan en `ids.json`, y se reservan en bloque *antes* de
 usarlos: si el programa se corta a la mitad, esos números quedan quemados.
 Perder números no cuesta nada; repetirlos rompe la carga.
+
+Arranca en **300037320**, que es el siguiente al último usado en los
+archivos ya subidos (Geox llegó a 300037032 y Lanidor a 300037319). Después
+de la primera corrida ese número no se mira más: manda `ids.json`.
+
+Para moverlo a mano, sin generar nada:
+
+```bash
+python woocommerce.py x --desde-id 300040000
+```
 
 Si dos personas generan archivos, hay que compartir el contador o se pisan:
 
@@ -434,15 +488,53 @@ Sin clave todo funciona salvo las traducciones: los colores salen como
 vienen (`Avio`, `Cream`) en vez de traducidos. Con `--sin-ia` ni siquiera lo
 intenta.
 
-### Qué se hace para que salga barato
+### Cómo saber si está funcionando
 
-- **Modelo Haiku**, el más económico. La tarea es clasificar columnas y
-  traducir palabras sueltas.
-- **Caché en disco** (`.cache-claude/`): la estructura de un formato de
-  archivo se consulta una vez y no se vuelve a preguntar. Los colores se
-  cachean **de a uno**, así un archivo nuevo de la misma marca solo paga los
-  que no vio antes.
-- **Solo valores únicos**: ocho filas de muestra, no las dos mil.
+Cada corrida lo dice en la segunda línea:
+
+```
+  Claude         : 2 llamadas · 14 valores nuevos · 0 del cache
+                   columnas: consultada  (claude-sonnet-4-6 / claude-haiku-...)
+```
+
+```
+  Claude         : SIN CLAVE. Los colores salen sin traducir.
+                   Copiá .env.ejemplo como .env y poné tu clave.
+```
+
+En la segunda corrida de la misma marca lo normal es ver **0 llamadas** y
+todo `del cache`: eso significa que está funcionando y que no está gastando.
+
+### Un modelo por tarea
+
+**Sonnet** decide qué significa cada columna. **Haiku** traduce los colores
+y materiales.
+
+No es una cuestión de plata: el volumen es tan chico que la diferencia son
+centavos. Es de riesgo.
+
+Detectar columnas se hace **una vez por formato de archivo** y queda
+cacheado para siempre, pero equivocarse arruina el archivo entero en
+silencio. Los excels traen `CODIGO`, `CODIGO PADRE`, `REFERENCIA`,
+`MATERIAL`, `CTA_CODIGO_INV`, `CTA_CODIGO_GST`… y en el archivo de Hugo **la
+columna `MATERIAL` no es el material, es la referencia**. Elegir mal ahí
+genera SKUs incorrectos en todas las filas.
+
+Traducir es lo opuesto: mucho volumen, riesgo nulo, y un error se ve a
+simple vista en la hoja de revisión.
+
+### Lo que sí baja el costo
+
+- **Caché en disco** (`.cache-claude/`): la estructura de un formato se
+  consulta una vez y no se vuelve a preguntar. Los colores se cachean **de a
+  uno**, así un archivo nuevo de la misma marca solo paga los que no vio
+  antes.
+- **Tres valores de ejemplo por columna** en vez de filas enteras. Con 58
+  columnas, el pedido de detección baja de ~2.800 a ~450 tokens: un 84%
+  menos. Y le sirve más al modelo, porque para decidir qué es una columna lo
+  que importa son sus valores, no las filas completas.
+- **Solo valores únicos**: en los cinco archivos de prueba son 138 colores y
+  234 materiales en total.
 - **Por lotes de 120**: el sistema anterior pedía todas las traducciones
   juntas con un tope de 2.000 tokens, y con archivos grandes la respuesta se
   cortaba a la mitad dejando un JSON roto.

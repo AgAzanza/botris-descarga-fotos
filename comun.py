@@ -71,6 +71,52 @@ def leer(path):
     return df
 
 
+# Como se llama en Claude cada columna canonica nuestra.
+_DE_CLAUDE = {
+    "codigo": "col_sku", "referencia": "col_referencia", "nombre": "col_nombre",
+    "talla": "col_talla", "color": "col_color", "marca": "col_marca",
+}
+
+
+def _rescatar_con_claude(df, faltan):
+    """
+    Cuando los alias fijos no alcanzan, se le pregunta a Claude.
+
+    Las marcas cambian los titulos de columna entre envios, y una lista fija
+    de alias funciona hasta que llega el archivo que no encaja. Antes eso
+    era un error de lectura: el programa ni siquiera intentaba bajar fotos.
+
+    Solo se llama si falta algo OBLIGATORIO, asi que en los archivos
+    conocidos no cuesta nada. Y la respuesta queda cacheada contra los
+    encabezados, asi que el mismo formato raro se consulta una sola vez.
+
+    Devuelve {canonico: nombre_real} con lo que haya podido identificar.
+    """
+    try:
+        import claude
+    except ImportError:
+        return {}
+    if not claude.leer_clave():
+        return {}
+
+    print(f"  columnas sin reconocer {faltan}: preguntando a Claude...")
+    try:
+        detectado = claude.detectar_columnas(
+            df.head(claude.FILAS_MUESTRA).to_dict("records"))
+    except Exception as e:
+        print(f"  no se pudo: {str(e)[:70]}")
+        return {}
+
+    encontradas = {}
+    for canonico in faltan:
+        valor = detectado.get(_DE_CLAUDE.get(canonico, ""))
+        if valor and valor in df.columns:
+            encontradas[canonico] = valor
+    if encontradas:
+        print(f"  Claude identifico: {encontradas}")
+    return encontradas
+
+
 def unificar_columnas(df):
     """Renombra las columnas al nombre canonico y limpia espacios."""
     disponibles = {c.upper(): c for c in df.columns}
@@ -84,7 +130,17 @@ def unificar_columnas(df):
 
     faltan = [c for c in OBLIGATORIAS if c not in out.columns]
     if faltan:
-        raise ValueError(f"Faltan columnas: {faltan}")
+        for canonico, real in _rescatar_con_claude(df, faltan).items():
+            out[canonico] = df[real].astype(str).str.strip()
+        faltan = [c for c in OBLIGATORIAS if c not in out.columns]
+
+    if faltan:
+        raise ValueError(
+            f"No se pudo identificar las columnas {faltan}.\n"
+            f"  Columnas del archivo: {list(df.columns)[:12]}...\n"
+            f"  Si el archivo trae encabezados nuevos, agregalos a COLUMNAS "
+            f"en comun.py, o pone la clave de Claude en el .env para que los "
+            f"deduzca solo.")
 
     # MK trae nombres con espacios de relleno ("MK POOL SLIDE      ")
     # y Lanidor con dobles espacios.
@@ -211,8 +267,30 @@ def excel_encontrados(origen, rep, carpeta_marca, marca=None,
 
     destino = Path(carpeta_marca) / nombre
     destino.parent.mkdir(parents=True, exist_ok=True)
+
+    # ACUMULA, igual que la hoja de revision. Una marca puede llegar en
+    # varios excels (MK manda uno por pedido) y todos van a la misma
+    # carpeta: sin esto, el segundo archivo borraba los productos del
+    # primero y el CSV de WooCommerce salia incompleto.
+    #
+    # Si un producto esta en los dos, gana la fila del excel de ahora.
+    # Para empezar de cero, se borra este archivo.
+    if destino.exists():
+        try:
+            previo = pd.read_excel(destino, dtype=str).fillna("")
+            if col_codigo in previo.columns:
+                ahora = set(sub[col_codigo].astype(str))
+                quedan_previas = previo[~previo[col_codigo].astype(str).isin(ahora)]
+                if len(quedan_previas):
+                    sub = pd.concat([sub, quedan_previas], ignore_index=True)
+        except Exception:
+            pass   # si el archivo viejo esta roto, se reemplaza y listo
+
     sub.to_excel(destino, index=False)
-    return destino, len(sub), len(codigos)
+    # se cuentan PRODUCTOS (codigo sin talla), no filas-talla
+    productos_dentro = {codigo_producto(c, t)
+                        for c, t in zip(sub[col_codigo], sub[col_talla])}
+    return destino, len(sub), len(productos_dentro)
 
 
 # ===========================================================================
@@ -483,6 +561,37 @@ bs.forEach(b => b.addEventListener('click', () => {
 """
 
 
+def _acumular(rep, reporte_previo):
+    """
+    Junta lo de esta corrida con lo que ya habia en el reporte.
+
+    Hace falta porque una misma marca puede llegar en VARIOS excels (MK
+    manda uno por pedido) y todos van a la misma carpeta. Sin esto, la
+    segunda corrida pisaba la hoja de la primera: las fotos quedaban todas
+    pero la revision mostraba solo el ultimo archivo.
+
+    Si un producto aparece en las dos, gana el de ahora: es el resultado
+    mas reciente.
+
+    Para empezar de cero, se borra revision/reporte.csv.
+    """
+    rep = rep.copy()
+    if not reporte_previo.exists():
+        return rep
+    try:
+        previo = pd.read_csv(reporte_previo, dtype=str).fillna("")
+    except Exception:
+        return rep
+    if "cod" not in previo.columns:
+        return rep
+
+    nuevos = set(rep["cod"].astype(str))
+    quedan = previo[~previo["cod"].astype(str).isin(nuevos)]
+    if len(quedan) == 0:
+        return rep
+    return pd.concat([rep, quedan], ignore_index=True)
+
+
 def hoja_revision(rep, carpeta_marca, marca,
                   titulo_links=("Ver en el sitio", "Foto original")):
     """
@@ -504,7 +613,7 @@ def hoja_revision(rep, carpeta_marca, marca,
     """
     import html as _h
 
-    rep = rep.copy()
+    rep = _acumular(rep, Path(carpeta_marca) / "revision" / "reporte.csv")
     rep["n_fotos"] = pd.to_numeric(rep["n_fotos"], errors="coerce").fillna(0).astype(int)
     rep = rep.sort_values("n_fotos", kind="stable")   # los problemas arriba
 
@@ -558,7 +667,8 @@ def hoja_revision(rep, carpeta_marca, marca,
 <style>{_CSS}</style>
 <header>
   <h1>Revision de fotos — {marca}</h1>
-  <p class="resumen">{len(rep)} productos, {total} fotos. Revisa que el color de
+  <p class="resumen">{len(rep)} productos, {total} fotos (de todos los excels
+  procesados en esta carpeta). Revisa que el color de
   la foto coincida con el de la ficha, que no haya repetidas y que ninguna sea
   de otro producto. Los que no tienen fotos llevan un link al buscador del
   sitio, para poder comprobar si el producto no existe o si le falta ese

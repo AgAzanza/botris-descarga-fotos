@@ -181,15 +181,40 @@ def _pedir(prompt, max_tokens=2000, clave=None, sistema=None,
 
 
 def _json_de(texto):
-    """Saca el JSON de la respuesta, tolerando ```json y comentarios //."""
+    """
+    Saca el JSON de la respuesta, tolerando lo que el modelo suele agregar.
+
+    Se prueba en orden, de lo menos invasivo a lo mas:
+
+      1. tal cual
+      2. sin los ``` de markdown
+      3. sin comas colgando antes de } o ]
+      4. sin comentarios //
+
+    EL ORDEN IMPORTA. Borrar los // antes de intentar parsear rompe los
+    colores con barra: "BLK//WHT" queda como "BLK, y el JSON deja de ser
+    valido. Por eso ese paso va ultimo y solo si todo lo demas fallo.
+    """
     t = texto.strip()
     t = re.sub(r"^```(?:json)?\s*", "", t)
     t = re.sub(r"\s*```$", "", t)
-    t = re.sub(r"//[^\n]*", "", t)          # el modelo a veces comenta
     ini, fin = t.find("{"), t.rfind("}")
     if ini >= 0 and fin > ini:
         t = t[ini:fin + 1]
-    return json.loads(t)
+
+    intentos = [
+        t,
+        re.sub(r",(\s*[}\]])", r"\1", t),                     # comas colgando
+        re.sub(r"(^|\s)//[^\n]*", "", t),                     # comentarios
+        re.sub(r",(\s*[}\]])", r"\1", re.sub(r"(^|\s)//[^\n]*", "", t)),
+    ]
+    ultimo = None
+    for intento in intentos:
+        try:
+            return json.loads(intento)
+        except json.JSONDecodeError as e:
+            ultimo = e
+    raise ultimo
 
 
 # ===========================================================================

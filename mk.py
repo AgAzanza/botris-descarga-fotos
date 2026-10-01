@@ -81,6 +81,8 @@ USO
 
 import argparse
 import json
+import re
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -118,13 +120,39 @@ def nueva_sesion():
 MARCA = "MK"
 CARPETA = "MichaelKors"
 
-BASE = "https://www.michaelkors.com"
-VARIACION = (BASE + "/on/demandware.store/Sites-mk_us-Site/en_US/"
-                    "Product-Variation")
+# Sufijo de los archivos de imagen (ver comun.nombre_foto).
+SUFIJO = "michaelkors-ecuador"
+
+# MK tiene un catalogo DISTINTO POR PAIS. El mismo producto puede existir
+# en el Reino Unido y no en Estados Unidos, o tener alli colores que aca no.
+# Verificado: el 43F5DTFS6L color 150 no esta en el sitio de EE.UU. (que
+# solo publica el 0632) pero si en michaelkors.co.uk. Consultando un solo
+# pais, esos productos salian como "no existe" cuando si existen.
+#
+# Se prueban en orden y se corta en el primero que devuelva las fotos del
+# color pedido.
+SITIOS = [
+    ("https://www.michaelkors.com",    "mk_us", "en_US"),
+    ("https://www.michaelkors.co.uk",  "mk_uk", "en_GB"),
+]
+
+BASE = SITIOS[0][0]
+VARIACION = "{base}/on/demandware.store/Sites-{sitio}-Site/{locale}/Product-Variation"
+FICHA_WEB = "{base}/{referencia}.html"
 BUSCADOR = BASE + "/search?q={referencia}"
 
-# Cual de los tamanos del JSON usamos, en orden de preferencia.
+# Cual de los tamanos usamos cuando las URLs vienen del JSON, en orden de
+# preferencia. Son los nombres de los campos de la respuesta.
 TAMANOS = ["zoomHiRes", "zoom", "large", "base"]
+
+# El nombre del tamano DENTRO DE LA URL del CDN, que es OTRO. En la
+# respuesta JSON el campo se llama "zoomHiRes" pero en la direccion la
+# misma foto va como ECOM_Image_Zoom_Highres:
+#
+#   assets.michaelkors.com/transform/ECOM_Image_Zoom_Highres/{uuid}/{nombre}
+#
+# Confundirlos hace que las fotos sacadas de la ficha den 404.
+PRESET_CDN = "ECOM_Image_Zoom_Highres"
 
 CABECERAS = {
     "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -170,13 +198,15 @@ def url_ficha(referencia, nombre=""):
     return f"{BASE}/{s}/{referencia}.html" if s else f"{BASE}/{referencia}.html"
 
 
-def _pedir(referencia, color, sesion):
-    """Una consulta cruda. Devuelve el bloque 'product' o None."""
+def _pedir(referencia, color, sesion, sitio=None):
+    """Una consulta cruda a un pais. Devuelve el bloque 'product' o None."""
+    base, id_sitio, locale = sitio or SITIOS[0]
+    url = VARIACION.format(base=base, sitio=id_sitio, locale=locale)
     params = {"pid": referencia,
               f"dwvar_{referencia}_color": color,
               "quantity": 1}
     try:
-        r = sesion.get(VARIACION, params=params, headers=CABECERAS, timeout=30)
+        r = sesion.get(url, params=params, headers=CABECERAS, timeout=30)
     except Exception:
         return None, "error de red"
     if r.status_code != 200:
@@ -244,82 +274,288 @@ def candidatos(cod_color, publicados):
     return salida
 
 
+# En la ficha, las fotos van en src normal: .../{ref}-{c3}-{c4}_{n}-tif
+_FOTO = r"assets\.michaelkors\.com/transform/([^/\"']+)/([0-9a-f-]{{8,}})/{ref}-{col}-(\d+)_(\d+)-tif"
+
+
+def _de_la_ficha(referencia, cod_color, sesion, sitio):
+    """
+    Respaldo: leer la ficha del producto en vez del JSON.
+
+    La pagina trae las fotos del color seleccionado en src normal, y los
+    botones de color revelan que colores existen. Sirve cuando el endpoint
+    de variantes no resuelve, que pasa segun el pais.
+
+    Devuelve (urls, colores_vistos, mapa) donde mapa es {color3: color4}.
+
+    EL MAPA ES LO MAS VALIOSO DE LA PAGINA. El nombre de cada imagen es
+    {ref}-{c3}-{c4}_{n}-tif, o sea que la propia URL dice cual es el codigo
+    de cuatro digitos de cada color:
+
+        30R5G9IS6L-156-0250_1-tif   ->  156 es 0250
+        32R6GY5W6B-252-1335_1-tif   ->  252 es 1335
+
+    Sin eso hay que adivinar, y adivinar falla: medido sobre 15 productos
+    reales, en 3 el c4 no era el color con ceros adelante. Con el mapa, al
+    endpoint de variantes se le manda el codigo correcto a la primera.
+    """
+    base = sitio[0]
+    url = FICHA_WEB.format(base=base, referencia=referencia)
+    try:
+        r = sesion.get(url, params={f"dwvar_{referencia}_color": cod_color},
+                       headers={**CABECERAS, "Accept": "text/html"},
+                       timeout=30, allow_redirects=True)
+    except Exception:
+        return [], [], {}
+    if r.status_code != 200:
+        return [], [], {}
+    html = r.text
+
+    # que colores muestra la ficha, y el codigo de 4 digitos de cada uno
+    mapa = {}
+    for c3, c4 in re.findall(
+            rf"{re.escape(referencia)}-(\d+)-(\d+)_\d+-tif", html):
+        mapa.setdefault(c3, c4)
+    vistos = sorted(mapa)
+
+    # las fotos grandes de NUESTRO color, sin repetir y en orden
+    patron = re.compile(_FOTO.format(ref=re.escape(referencia),
+                                     col=re.escape(str(cod_color).strip())))
+    urls, claves = [], set()
+    for m in patron.finditer(html):
+        preset, uuid, c4, n = m.groups()
+        if "Swatch" in preset or "Thumbnail" in preset:
+            continue
+        clave = (uuid, n)
+        if clave in claves:
+            continue
+        claves.add(clave)
+        urls.append(f"https://assets.michaelkors.com/transform/"
+                    f"{PRESET_CDN}/{uuid}/{referencia}-{cod_color}-{c4}_{n}-tif")
+    urls.sort(key=lambda u: int(re.search(r"_(\d+)-tif$", u).group(1)))
+    return urls, vistos, mapa
+
+
 def consultar(referencia, cod_color, sesion):
     """
-    Pide la variante y se queda con las fotos SOLO si son del color pedido.
+    Busca las fotos del color pedido, en cada pais, por los dos caminos.
 
-    La prueba de que acerto NO es el productType: verificado a mano, MK
-    responde "master" incluso cuando devuelve las fotos correctas. Lo que
-    distingue es el nombre del archivo, que lleva el color adentro:
+    ORDEN Y POR QUE:
 
-        color=0001 -> MT670N27R3-001-0001_1-tif   <- del color 001, sirve
-        color=001  -> MT670N27R3-303-3031_1-tif   <- del color por defecto
+    1. LA FICHA, para conseguir el MAPA de colores. El nombre de cada
+       imagen dice el codigo de cuatro digitos de su color
+       (30R5G9IS6L-156-0250_1-tif: el 156 es 0250). Sin ese dato hay que
+       adivinar, y medido sobre 15 productos reales, en 3 el codigo no era
+       el color con ceros adelante.
+
+    2. EL ENDPOINT DE VARIANTES, ya con el codigo correcto. Es el que
+       entrega la galeria completa del color.
+
+    3. SE QUEDA CON LA LISTA MAS LARGA, entre los dos caminos Y ENTRE LOS
+       DOS PAISES. La ficha suele traer UNA sola imagen del color pedido
+       (el botoncito), y quedarse con eso daba 1 foto cuando habia 5.
+
+       Por eso UNA SOLA FOTO NO CORTA LA BUSQUEDA: se guarda como lo mejor
+       hasta ahora y se sigue con el otro pais. Caso real: el 43F5DTFS6L
+       color 150 se vende en el Reino Unido, pero Estados Unidos muestra
+       igual su botoncito; cortando ahi se entregaba 1 foto en vez de las
+       4 que tiene.
+
+    El criterio de acierto es siempre el mismo: que el NOMBRE del archivo
+    contenga el color. MK responde 200 y "master" aunque acierte, asi que
+    el tipo no sirve.
 
     Devuelve (urls, colores_publicados, nombre_producto, problema).
     """
-    colores, nombre, ultimo = [], "", "No se obtuvo respuesta del sitio."
-    probados = set()
-    pendientes = candidatos(cod_color, [])
+    color = str(cod_color).strip()
+    colores, nombre = [], ""
+    ultimo = "No se obtuvo respuesta del sitio."
+    mejor_global = []
 
-    while pendientes:
-        color = pendientes.pop(0)
-        if color in probados:
-            continue
-        probados.add(color)
+    for base, pais, locale in SITIOS:
+        sitio = (base, pais, locale)
 
-        prod, err = _pedir(referencia, color, sesion)
+        # --- 1. la ficha: fotos sueltas y, sobre todo, el mapa de colores ---
+        urls_ficha, vistos, mapa = _de_la_ficha(referencia, color, sesion, sitio)
         comun.time.sleep(comun.ESPERA)
-        if prod is None:
-            ultimo = f"El sitio respondio mal ({err})."
-            continue
+        if vistos:
+            colores = sorted(set(colores) | set(vistos))
+            if color not in vistos:
+                ultimo = (f"{pais} no publica el color {color} de esta "
+                          f"referencia (tiene: {', '.join(vistos)})")
 
-        nombre = prod.get("productName") or nombre
+        # --- 2. el endpoint, con el codigo que dijo la ficha ---
+        #
+        # Solo si hace falta: cuando la ficha ya trajo una galeria (2 o mas
+        # fotos) no tiene sentido preguntar de nuevo. Con una sola foto si
+        # se consulta, porque esa suele ser el botoncito de color.
+        orden = candidatos(color, vistos)
+        if color in mapa:
+            orden.insert(0, mapa[color])      # el correcto, primero
 
-        # La primera respuesta nos dice que colores existen de verdad; con
-        # eso se rearma la cola en vez de seguir adivinando.
-        nuevos = _colores_de(prod)
-        if nuevos and not colores:
-            colores = nuevos
-            for c in candidatos(cod_color, colores):
-                if c not in probados and c not in pendientes:
-                    pendientes.append(c)
+        urls_endpoint, probados = [], set()
+        for c in ([] if len(urls_ficha) > 1 else orden):
+            if c in probados:
+                continue
+            probados.add(c)
 
-        correctas, todas = _fotos_de(prod, cod_color)
-        if correctas:
-            return correctas, colores, nombre, None
-        if todas:
-            ultimo = (f"El sitio devolvio fotos de otro color "
-                      f"(ejemplo: {todas[0].rsplit('/', 1)[-1]}).")
-        else:
-            ultimo = "El producto existe pero no trae fotos."
+            prod, err = _pedir(referencia, c, sesion, sitio)
+            comun.time.sleep(comun.ESPERA)
+            if prod is None:
+                ultimo = f"{pais}: el sitio respondio mal ({err})."
+                continue
+
+            nombre = prod.get("productName") or nombre
+            nuevos = _colores_de(prod)
+            if nuevos:
+                colores = sorted(set(colores) | set(nuevos))
+
+            correctas, todas = _fotos_de(prod, color)
+            if correctas:
+                urls_endpoint = correctas
+                break
+            if todas:
+                ultimo = (f"{pais}: devolvio fotos de otro color "
+                          f"(ejemplo: {todas[0].rsplit('/', 1)[-1]}).")
+
+        # --- 3. la lista mas larga gana ---
+        mejor = max((urls_endpoint, urls_ficha), key=len)
+        if len(mejor) > len(mejor_global):
+            mejor_global = mejor
+        # con 2 o mas es una galeria de verdad y no hace falta seguir;
+        # con una sola, casi seguro es el botoncito: se prueba el otro pais
+        if len(mejor_global) > 1:
+            return mejor_global, colores, nombre, None
+
+    if mejor_global:
+        return mejor_global, colores, nombre, None
 
     if colores:
-        ultimo += f" Colores publicados: {', '.join(colores)}."
+        ultimo += f". Colores publicados: {', '.join(colores)}."
     return [], colores, nombre, ultimo
 
 
 def diagnostico(referencia, cod_color, sesion):
-    """Muestra crudo lo que contesta el sitio, para un solo producto."""
-    print(f"\n  referencia {referencia}   color del excel {cod_color}\n")
-    prod0, _ = _pedir(referencia, str(cod_color).strip().zfill(4), sesion)
-    publicados = _colores_de(prod0) if prod0 else []
-    for color in candidatos(cod_color, publicados):
-        prod, err = _pedir(referencia, color, sesion)
-        if prod is None:
-            print(f"  color={color:<6} -> {err}")
-            continue
-        _, todas = _fotos_de(prod, cod_color)
-        correctas, _ = _fotos_de(prod, cod_color)
-        veredicto = "SIRVE" if correctas else "no es este color"
-        print(f"  color={color:<6} -> {veredicto}"
-              f"   (productType={prod.get('productType')!r}, no es el criterio)")
-        print(f"                  nombre  : {prod.get('productName')}")
-        print(f"                  colores : {', '.join(_colores_de(prod)) or '(ninguno)'}")
-        print(f"                  fotos   : {len(todas)}"
-              + (f"  ej: {todas[0].rsplit('/', 1)[-1]}" if todas else ""))
-        print(f"                  ficha   : {url_ficha(referencia, prod.get('productName',''))}")
-        print()
+    """Muestra que contesta cada pais y cada camino, para un solo producto."""
+    color = str(cod_color).strip()
+    print(f"\n  referencia {referencia}   color del excel {color}\n")
+
+    for base, pais, locale in SITIOS:
+        sitio = (base, pais, locale)
+        print(f"  --- {pais}  ({base}) ---")
+
+        urls, vistos, mapa = _de_la_ficha(referencia, color, sesion, sitio)
         comun.time.sleep(comun.ESPERA)
+        print(f"    ficha                 -> {len(urls)} fotos de este color")
+        print(f"    codigo real del color -> {mapa.get(color, '(no aparece)')}")
+        print(f"    colores que publica   -> {', '.join(vistos) or '-'}")
+        for u in urls[:6]:
+            print(f"       {u.rsplit('/', 1)[-1]}")
+
+        orden = candidatos(color, vistos)
+        if color in mapa:
+            orden.insert(0, mapa[color])
+        vistos_ya = set()
+        for c in orden[:4]:
+            if c in vistos_ya:
+                continue
+            vistos_ya.add(c)
+            prod, err = _pedir(referencia, c, sesion, sitio)
+            comun.time.sleep(comun.ESPERA)
+            if prod is None:
+                print(f"    variantes color={c:<6} -> {err}")
+                continue
+            correctas, todas = _fotos_de(prod, color)
+            print(f"    variantes color={c:<6} -> "
+                  f"{len(correctas)} de este color, {len(todas)} en total"
+                  f"   (tipo={prod.get('productType')})"
+                  + (f"   ej: {todas[0].rsplit('/', 1)[-1]}" if todas else ""))
+            if correctas:
+                break
+
+        print(f"    ficha: {FICHA_WEB.format(base=base, referencia=referencia)}")
+        print()
+
+    u, cols, nom, prob = consultar(referencia, color, sesion)
+    print(f"  RESULTADO FINAL: {len(u)} fotos" + (f"   |  {prob}" if prob else ""))
+    for x in u:
+        print(f"     {x}")
+    print()
+
+
+def reporte_diagnostico(excel, sesion, destino, limite=None):
+    """
+    Genera un archivo con TODO lo que devolvio el sitio, producto por
+    producto, para poder revisar si el metodo esta funcionando.
+
+    El metodo de cada marca se construyo mirando UN producto. Este reporte
+    existe para dejar de suponer: muestra, por cada articulo del excel y
+    por cada pais, que respondio la ficha, que colores publica, que
+    devolvio el endpoint y con que se quedo el programa.
+    """
+    prod = comun.cargar(excel, marca=MARCA)
+    if limite:
+        prod = prod.head(limite)
+
+    lineas = [
+        "REPORTE DE DIAGNOSTICO - MICHAEL KORS",
+        f"archivo : {Path(excel).name}",
+        f"fecha   : {datetime.now():%Y-%m-%d %H:%M}",
+        f"paises  : {', '.join(p for _, p, _ in SITIOS)}",
+        f"productos: {len(prod)}",
+        "=" * 78, "",
+    ]
+
+    con, sin = 0, 0
+    for i, (_, p) in enumerate(prod.iterrows(), 1):
+        ref, col = p["referencia"], p["cod_color"]
+        lineas += [f"[{i}/{len(prod)}] {p['cod']}",
+                   f"  excel    : ref={ref}  color={col}  "
+                   f"nombre={p.get('nombre','')}  color_texto={p.get('color','')}"]
+
+        for base, pais, locale in SITIOS:
+            sitio = (base, pais, locale)
+
+            urls, vistos, mapa = _de_la_ficha(ref, col, sesion, sitio)
+            comun.time.sleep(comun.ESPERA)
+            lineas.append(f"  {pais} ficha    : {len(urls)} fotos de este color"
+                          f" | codigo real del color: {mapa.get(str(col).strip(), '-')}"
+                          f" | colores: {', '.join(vistos) or '-'}")
+            lineas.append(f"    url      : {FICHA_WEB.format(base=base, referencia=ref)}")
+            for u in urls[:4]:
+                lineas.append(f"      {u}")
+
+            orden = candidatos(col, vistos)
+            if str(col).strip() in mapa:
+                orden.insert(0, mapa[str(col).strip()])
+            for c in orden[:3]:
+                prodj, err = _pedir(ref, c, sesion, sitio)
+                comun.time.sleep(comun.ESPERA)
+                if prodj is None:
+                    lineas.append(f"  {pais} variantes color={c}: {err}")
+                    continue
+                correctas, todas = _fotos_de(prodj, col)
+                lineas.append(
+                    f"  {pais} variantes color={c}: tipo={prodj.get('productType')}"
+                    f" | fotos_de_este_color={len(correctas)} | total={len(todas)}"
+                    f" | colores={', '.join(_colores_de(prodj)) or '-'}")
+                if todas:
+                    lineas.append(f"      ejemplo: {todas[0].rsplit('/', 1)[-1]}")
+                if correctas:
+                    break
+
+        u, cs, nom, prob = consultar(ref, col, sesion)
+        lineas += [f"  RESULTADO: {len(u)} fotos"
+                   + (f"  |  {prob}" if prob else ""), ""]
+        con += 1 if u else 0
+        sin += 0 if u else 1
+
+    lineas += ["=" * 78,
+               f"con fotos: {con}   sin fotos: {sin}   de {len(prod)}"]
+
+    destino = Path(destino)
+    destino.write_text("\n".join(lineas), encoding="utf-8")
+    return destino, con, sin
 
 
 # ===========================================================================
@@ -337,13 +573,43 @@ def main(argv=None):
     ap.add_argument("--diagnostico", nargs=2, metavar=("REFERENCIA", "COLOR"),
                     help="muestra que contesta el sitio para un solo producto "
                          "y no baja nada")
+    ap.add_argument("--reporte", action="store_true",
+                    help="genera diagnostico-mk.txt con todo lo que devolvio "
+                         "el sitio para cada producto del excel, sin bajar nada")
+    ap.add_argument("--auditoria", action="store_true",
+                    help="genera auditoria-mk.json con toda la evidencia cruda "
+                         "de varios productos, para revisar el metodo")
+    ap.add_argument("--muestra", type=int, default=12,
+                    help="cuantos productos audita (por defecto 12)")
     args = ap.parse_args(argv)
 
     if args.diagnostico:
         diagnostico(args.diagnostico[0], args.diagnostico[1], nueva_sesion())
         return
 
+    if args.reporte:
+        destino = args.excel.parent / "diagnostico-mk.txt"
+        print(f"\n  revisando {args.limite or 'todos los'} productos, "
+              f"esto tarda...")
+        d, con, sin = reporte_diagnostico(args.excel, nueva_sesion(),
+                                          destino, args.limite)
+        print(f"  con fotos: {con}  |  sin fotos: {sin}")
+        print(f"\n  Listo: {d.resolve()}")
+        return
+
     prod = comun.cargar(args.excel, marca=MARCA)
+
+    if args.auditoria:
+        if len(prod) == 0:
+            print("El excel no tiene productos MK.")
+            return
+        print(f"\nAuditando {min(args.muestra, len(prod))} de {len(prod)} "
+              f"productos. Tarda un rato.\n")
+        destino = auditoria(prod, nueva_sesion(),
+                            args.salida / "auditoria-mk.json", args.muestra)
+        print(f"\n  Listo: {destino.resolve()}")
+        print("  Ese archivo es el que hay que revisar.")
+        return
     if len(prod) == 0:
         todas = comun.cargar(args.excel)["marca"].unique()
         print(f"El excel no tiene productos {MARCA}. Marcas: {list(todas)}")
@@ -362,8 +628,8 @@ def main(argv=None):
     for i, (_, p) in enumerate(prod.iterrows(), 1):
         cod, ref, col = p["cod"], p["referencia"], p["cod_color"]
 
-        if not args.forzar and comun.ya_bajado(carpeta, cod):
-            existentes = comun.archivos_de(carpeta, cod)
+        if not args.forzar and comun.ya_bajado(carpeta, cod, SUFIJO):
+            existentes = comun.archivos_de(carpeta, cod, SUFIJO)
             print(f"  {i:>3}/{len(prod)} [--] {cod:<16} ya estaba ({len(existentes)})")
             filas.append(_fila(p, existentes, 0, [], "", ""))
             continue
@@ -377,7 +643,7 @@ def main(argv=None):
                 crudas.append((n, img))       # n = orden del carrusel
 
         imagenes = comun.unicas(crudas)
-        nombres = comun.guardar(imagenes, carpeta, cod)
+        nombres = comun.guardar(imagenes, carpeta, cod, SUFIJO)
         repetidas = len(crudas) - len(imagenes)
 
         detalle = f"{len(nombres)} fotos" if nombres else (problema or "sin fotos")

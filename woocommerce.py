@@ -329,11 +329,22 @@ def construir(excel, marca, carpeta_fotos, base_url=BASE_URL,
         return claude.material_dominante(v) if HAY_CLAUDE else v.capitalize()
 
     # --- agrupar por referencia, conservando el orden del excel ---
-    grupos, orden = {}, []
+    #
+    # UNA FILA POR CODIGO, no por fila del excel. Los excels traen el mismo
+    # CODIGO repetido en varias lineas que solo se diferencian en CANTIDAD
+    # (lotes distintos del mismo pedido): en el de MK, 94 de 207 codigos
+    # estaban repetidos. Sin esto se generaba una variacion por cada linea,
+    # con SKUs duplicados y varias variaciones con la misma talla y color
+    # bajo el mismo padre, que es justo lo que WooCommerce no admite.
+    grupos, orden, ya_vistos = {}, [], set()
     for _, r in crudo.iterrows():
         ref = str(r[c_ref]).strip() if c_ref else ""
         if not ref:
             continue
+        codigo = str(r[c_cod]).strip()
+        if codigo in ya_vistos:
+            continue
+        ya_vistos.add(codigo)
         if ref not in grupos:
             grupos[ref] = []
             orden.append(ref)
