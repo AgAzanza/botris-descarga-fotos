@@ -279,7 +279,10 @@ def main(argv=None):
                          "y esta atado a tu IP.")
     args = ap.parse_args(argv)
 
-    prod = comun.cargar(args.excel, marca=args.marca)
+    # referencia, color y talla salen del codigo (ver comun.GRAMATICAS_TEXTO).
+    # FUSTER no tiene estructura declarada: usa las columnas como antes.
+    prod = comun.cargar(args.excel, marca=args.marca,
+                        gram=comun.gramatica(args.marca), controlar=True)
     if len(prod) == 0:
         todas = comun.cargar(args.excel)["marca"].unique()
         print(f"El excel no tiene productos {args.marca}. Marcas: {list(todas)}")
@@ -352,7 +355,8 @@ def main(argv=None):
     rep = pd.DataFrame(filas)
     destino, total, sin = comun.hoja_revision(rep, carpeta, carpeta.name)
     xls, n_filas, n_prod = comun.excel_encontrados(args.excel, rep, carpeta,
-                                                   marca=args.marca)
+                                                   marca=args.marca,
+                                                   gram=comun.gramatica(args.marca))
 
     print(f"\n{'-' * 64}")
     print(f"  productos con fotos  : {(rep.n_fotos > 0).sum()} de {len(rep)}")

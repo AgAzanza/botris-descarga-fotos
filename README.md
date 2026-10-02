@@ -194,6 +194,11 @@ No es un archivo nuevo armado con los datos del programa: se relee el
 original y se filtran sus filas. Por eso el cliente lo puede usar
 exactamente como usaría el que mandó él.
 
+También es **acumulado**: si una marca llega en varios excels, todos suman
+al mismo archivo. Sin eso, procesar el segundo pedido de MK borraba los
+productos del primero y el CSV de WooCommerce salía incompleto. Para
+empezar de cero, se borra `encontrados.xlsx`.
+
 Van **todas las tallas** de cada producto encontrado, no una fila por
 producto, porque quien lo recibe espera la misma estructura que envió. Y si
 un excel trae dos marcas, cada una recibe el suyo con sus propias filas.
@@ -238,6 +243,11 @@ marca define el suyo en su archivo (`SUFIJO`).
 Abrir `fotos/{Marca}/revision/revision.html` en el navegador. Muestra una
 fila por producto con sus fotos, **los problemas primero**.
 
+La hoja es **acumulada**: si una marca llega en varios excels —MK manda uno
+por pedido— todos van a la misma carpeta y la hoja los muestra juntos. Si un
+producto aparece en dos archivos, queda el resultado más reciente. Para
+empezar de cero, se borra `revision/reporte.csv`.
+
 Qué mirar:
 
 - **Que el color de la foto coincida** con el color de la ficha. Es la
@@ -248,6 +258,64 @@ Qué mirar:
 
 Los productos sin fotos llevan una nota explicando por qué y un link para
 comprobarlo en el sitio.
+
+---
+
+## Todo sale del código
+
+De todas las columnas del excel, **el código es la única que no llena una
+persona**: la genera el sistema de la marca, así que siempre sigue el mismo
+formato. Las demás —talla, referencia, color— se cargan a mano, y ahí
+aparecen los errores.
+
+Por eso cada marca declara **una vez** cómo está armado su código, en
+`GRAMATICAS_TEXTO` dentro de `comun.py`, y de ahí salen referencia, color y
+talla:
+
+| Marca | Estructura | Ejemplo |
+|---|---|---|
+| MK | 10 de referencia + 3 de color + talla | `30F2GTTT8L` `001` `OS` |
+| HUGO / BOSS | 8 + letra H u O + 3 de color + talla | `50507803` `O` `271` `L` |
+| Geox | 11 de referencia + 5 de color + talla | `D650ZB00022` `C4005` `35` |
+| Lanidor | separado por puntos | `409121` `.1.` `34` |
+
+Las otras columnas pasan a servir **solo para verificar**. Si no coinciden
+con el código, gana el código y queda anotado.
+
+Errores reales de las marcas que esto resuelve solo:
+
+- **Tallas mal cargadas.** El inventario de MK trae `0OS` en vez de `OS` y
+  `006` en vez de `6`. Recortando según esa columna se perdían dígitos del
+  color.
+- **Columnas que faltan.** Ese mismo inventario no trae `REFERENCIA` ni
+  `COD.COLOR`. No hacen falta: están en el código.
+- **Columnas con otro dato.** En los cinturones de MK, la columna
+  `REFERENCIA` trae un código de barras (`198654107135`) en vez del modelo
+  (`MKWB557766`). Con la columna, esos productos no se encontraban.
+- **Dos colores con el mismo nombre.** MK llama `BROWN` a los colores `200`
+  y `236` de un mismo cinturón. En el CSV se les agrega el código —`Brown
+  (200)`, `Brown (236)`— para que WooCommerce los distinga.
+
+Verificado sobre los seis excels de prueba: el 100% de los códigos calza con
+su estructura y da exactamente los mismos productos que antes.
+
+### El control previo
+
+Antes de buscar nada, cada programa revisa el excel:
+
+```
+  control previo: 4622 de 4691 codigos con el formato de MICHAEL KORS (99%)
+    22 con la columna de talla distinta al codigo -> se usa el codigo
+    69 sin el formato de la marca (ej: 10116210, 10116211, 10121406)
+```
+
+Si calzan menos del 80%, **frena** en vez de procesar: lo más probable es
+que el archivo sea de otra marca o que el formato haya cambiado. Es
+preferible avisar a entregar resultados equivocados sin que nadie se entere.
+
+Si algún día una marca cambia el formato de sus códigos, se actualiza su
+línea en `GRAMATICAS_TEXTO` y el control previo lo va a señalar de
+inmediato.
 
 ---
 

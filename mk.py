@@ -118,6 +118,20 @@ def nueva_sesion():
 # ===========================================================================
 
 MARCA = "MK"
+
+# Como puede venir escrita la marca en la columna del excel. Los archivos de
+# estructura dicen "MK" y los de inventario "MICHAEL KORS".
+NOMBRES_MARCA = ["MK", "MICHAEL KORS"]
+
+# Referencia, color y talla salen del CODIGO (ver GRAMATICAS_TEXTO en
+# comun.py), no de las columnas: en los inventarios de MK no vienen
+# REFERENCIA ni COD.COLOR, y la talla trae errores como "0OS" o "006".
+GRAM = comun.gramatica("MK")
+
+
+def cargar_mk(excel, controlar=False):
+    """Los productos de MK del excel."""
+    return comun.cargar(excel, marca=NOMBRES_MARCA, gram=GRAM, controlar=controlar)
 CARPETA = "MichaelKors"
 
 # Sufijo de los archivos de imagen (ver comun.nombre_foto).
@@ -493,7 +507,7 @@ def reporte_diagnostico(excel, sesion, destino, limite=None):
     por cada pais, que respondio la ficha, que colores publica, que
     devolvio el endpoint y con que se quedo el programa.
     """
-    prod = comun.cargar(excel, marca=MARCA)
+    prod = cargar_mk(excel)
     if limite:
         prod = prod.head(limite)
 
@@ -597,7 +611,7 @@ def main(argv=None):
         print(f"\n  Listo: {d.resolve()}")
         return
 
-    prod = comun.cargar(args.excel, marca=MARCA)
+    prod = cargar_mk(args.excel, controlar=True)
 
     if args.auditoria:
         if len(prod) == 0:
@@ -634,7 +648,13 @@ def main(argv=None):
             filas.append(_fila(p, existentes, 0, [], "", ""))
             continue
 
-        urls, colores, nombre_web, problema = consultar(ref, col, sesion)
+        if not ref or not col:
+            urls, colores, nombre_web = [], [], ""
+            problema = ("El codigo no tiene el formato de MK (10 de referencia "
+                        "+ 3 de color), no se puede buscar en su sitio. Suele "
+                        "ser un perfume o un articulo de otra linea.")
+        else:
+            urls, colores, nombre_web, problema = consultar(ref, col, sesion)
 
         crudas = []
         for n, url in enumerate(urls):
@@ -656,7 +676,8 @@ def main(argv=None):
     rep = pd.DataFrame(filas)
     destino, total, sin = comun.hoja_revision(rep, carpeta, CARPETA)
     xls, n_filas, n_prod = comun.excel_encontrados(args.excel, rep, carpeta,
-                                                   marca=MARCA)
+                                                   marca=NOMBRES_MARCA,
+                                                   gram=GRAM)
 
     print(f"\n{'-' * 64}")
     print(f"  productos con fotos  : {(rep.n_fotos > 0).sum()} de {len(rep)}")

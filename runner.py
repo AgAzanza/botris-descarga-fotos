@@ -37,6 +37,7 @@ MODULOS = {
     "HUGO": hugo,
     "BOSS": hugo,        # el mismo archivo cubre las dos
     "MK":   mk,
+    "MICHAEL KORS": mk,  # asi viene en los excels de inventario
 }
 
 # Marcas que un mismo modulo resuelve en una sola corrida.

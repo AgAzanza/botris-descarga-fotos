@@ -211,7 +211,9 @@ def main(argv=None):
         diagnostico(args.diagnostico, requests.Session(), args.locale, args.tamano)
         return
 
-    prod = comun.cargar(args.excel, marca=MARCA)
+    # referencia, color y talla salen del codigo (ver comun.GRAMATICAS_TEXTO)
+    prod = comun.cargar(args.excel, marca=MARCA, gram=comun.gramatica(MARCA),
+                        controlar=True)
     if len(prod) == 0:
         todas = comun.cargar(args.excel)["marca"].unique()
         print(f"El excel no tiene productos {MARCA}. Marcas: {list(todas)}")
@@ -266,7 +268,8 @@ def main(argv=None):
     rep = pd.DataFrame(filas)
     destino, total, sin = comun.hoja_revision(rep, carpeta, CARPETA)
     xls, n_filas, n_prod = comun.excel_encontrados(args.excel, rep, carpeta,
-                                                   marca=MARCA)
+                                                   marca=MARCA,
+                                                   gram=comun.gramatica(MARCA))
 
     print(f"\n{'-' * 64}")
     print(f"  productos con fotos  : {(rep.n_fotos > 0).sum()} de {len(rep)}")

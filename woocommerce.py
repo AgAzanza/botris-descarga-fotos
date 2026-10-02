@@ -103,7 +103,10 @@ MARCAS = {
     "FUSTER": {"nombre": "Fuster",        "carpeta": "Fuster",      "sufijo": "fuster-ecuador"},
     "HUGO":   {"nombre": "Hugo",          "carpeta": "HUGO",        "sufijo": "hugo-ecuador"},
     "BOSS":   {"nombre": "Boss",          "carpeta": "BOSS",        "sufijo": "boss-ecuador"},
-    "MK":     {"nombre": "Michael Kors",  "carpeta": "MichaelKors", "sufijo": "michaelkors-ecuador"},
+    "MK":     {"nombre": "Michael Kors",  "carpeta": "MichaelKors", "sufijo": "michaelkors-ecuador",
+               # como puede venir en la columna MARCA, y el largo fijo de la
+               # referencia para sacarla del codigo si no hay columna aparte
+               "alias": ["MK", "MICHAEL KORS"]},
 }
 
 # Categoria por la primera letra del codigo. Es la nomenclatura de Geox;
@@ -292,8 +295,9 @@ def construir(excel, marca, carpeta_fotos, base_url=BASE_URL,
 
     col_marca = cols.get("marca")
     if col_marca:
+        nombres = {n.upper() for n in cfg.get("alias", [marca])}
         crudo = crudo[crudo[col_marca].astype(str).str.strip().str.upper()
-                      == marca.upper()]
+                      .isin(nombres)]
     if len(crudo) == 0:
         return [], [f"El excel no tiene filas de {marca}."], {}
 
@@ -328,6 +332,26 @@ def construir(excel, marca, carpeta_fotos, base_url=BASE_URL,
             return trad_mat[v]
         return claude.material_dominante(v) if HAY_CLAUDE else v.capitalize()
 
+    # REFERENCIA, COLOR Y TALLA SALEN DEL CODIGO cuando la marca tiene su
+    # estructura declarada (comun.GRAMATICAS_TEXTO). Las columnas se cargan a
+    # mano y traen errores; el codigo lo genera el sistema de la marca.
+    #
+    # Tiene que ser LA MISMA regla que uso la descarga: si no, el codigo de
+    # producto no coincide con el nombre de las fotos y no se encuentran.
+    gram = comun.gramatica(marca)
+
+    def partes_de(r):
+        p = gram.partes(r[c_cod]) if gram is not None else None
+        talla_col = str(r[c_tal]).strip() if c_tal else ""
+        if p:
+            return {"ref": p["referencia"], "cod": p["cod"],
+                    "codcolor": p["cod_color"],
+                    "talla": comun.talla_a_mostrar(talla_col, p["talla"])}
+        # sin estructura declarada, o el codigo no calza: las columnas
+        return {"ref": str(r[c_ref]).strip() if c_ref else "",
+                "cod": comun.codigo_producto(r[c_cod], talla_col),
+                "codcolor": "", "talla": talla_col}
+
     # --- agrupar por referencia, conservando el orden del excel ---
     #
     # UNA FILA POR CODIGO, no por fila del excel. Los excels traen el mismo
@@ -338,7 +362,7 @@ def construir(excel, marca, carpeta_fotos, base_url=BASE_URL,
     # bajo el mismo padre, que es justo lo que WooCommerce no admite.
     grupos, orden, ya_vistos = {}, [], set()
     for _, r in crudo.iterrows():
-        ref = str(r[c_ref]).strip() if c_ref else ""
+        ref = partes_de(r)["ref"]
         if not ref:
             continue
         codigo = str(r[c_cod]).strip()
@@ -359,20 +383,23 @@ def construir(excel, marca, carpeta_fotos, base_url=BASE_URL,
     filas, avisos = [], []
     n_padres = n_var = n_simple = 0
     sin_foto = []
+    renombrados = set()
 
     for ref in orden:
         grupo = grupos[ref]
 
         variaciones = []
         for r in grupo:
-            cod_prod = comun.codigo_producto(r[c_cod], r[c_tal] if c_tal else "")
+            pr = partes_de(r)
+            cod_prod = pr["cod"]
             archivos = comun.archivos_de(carpeta_fotos, cod_prod, sufijo)
             if not archivos:
                 sin_foto.append(cod_prod)
             variaciones.append({
                 "sku": str(r[c_cod]).strip(),
                 "cod": cod_prod,
-                "talla": talla(r[c_tal]) if c_tal else "",
+                "codcolor": pr["codcolor"],
+                "talla": talla(pr["talla"]),
                 "color": color_de(r[c_col]) if c_col else "",
                 "material": material_de(r[c_mat]) if c_mat else "",
                 "fit": str(r[c_fit]).strip().capitalize() if c_fit else "",
@@ -386,6 +413,19 @@ def construir(excel, marca, carpeta_fotos, base_url=BASE_URL,
         variaciones = [v for v in variaciones if v["urls"]]
         if not variaciones:
             continue
+
+        # DOS COLORES DISTINTOS CON EL MISMO NOMBRE. Pasa: en un cinturon de
+        # MK, los codigos 200 y 236 vienen los dos como "BROWN". Bajo un mismo
+        # padre eso deja dos variaciones identicas para WooCommerce. Se les
+        # agrega el codigo para que se distingan: "Brown (200)", "Brown (236)".
+        codigos_por_nombre = {}
+        for v in variaciones:
+            if v["color"] and v["codcolor"]:
+                codigos_por_nombre.setdefault(v["color"], set()).add(v["codcolor"])
+        for v in variaciones:
+            if len(codigos_por_nombre.get(v["color"], ())) > 1:
+                v["color"] = f'{v["color"]} ({v["codcolor"]})'
+                renombrados.add(ref)
 
         if len(variaciones) == 1:
             v = variaciones[0]
@@ -428,6 +468,10 @@ def construir(excel, marca, carpeta_fotos, base_url=BASE_URL,
             id_ += 1
             n_var += 1
 
+    if renombrados:
+        avisos.append(f"{len(renombrados)} productos con dos colores del mismo "
+                      f"nombre: se les agrego el codigo para distinguirlos "
+                      f"(ej: {', '.join(sorted(renombrados)[:3])}).")
     if sin_foto:
         avisos.append(f"{len(sin_foto)} productos sin fotos quedaron fuera "
                       f"(ej: {', '.join(sin_foto[:3])}).")

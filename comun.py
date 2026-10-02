@@ -45,7 +45,7 @@ COLUMNAS = {
     "marca":      ["COD.MARCA", "MARCA"],
     "referencia": ["REFERENCIA", "MATERIAL"],   # Hugo la llama MATERIAL
     "cod_color":  ["COD.COLOR"],
-    "color":      ["COLOR", "COLOR LETRAS"],
+    "color":      ["COLOR", "COLOR LETRAS", "TRAMA"],
     "talla":      ["COD.TALLA", "TALLA", "TALLA HB"],
     "ean":        ["COD.BARRA"],
     "coleccion":  ["COD.COLECCION", "COLECCION", "COLECCIÓN"],
@@ -178,9 +178,160 @@ def codigo_producto(codigo, talla):
     return c[:-len(t)] if t and c.endswith(t) and len(c) > len(t) else c
 
 
-def productos(df):
+# ===========================================================================
+# ESTRUCTURA DEL CODIGO  (lo unico que las marcas no escriben a mano)
+# ===========================================================================
+#
+# De todas las columnas del excel, el CODIGO es la unica que no llena una
+# persona: la genera el sistema de la marca, asi que siempre sigue el mismo
+# formato. Las demas (talla, referencia, color, marca) se cargan a mano y
+# ahi aparecen los errores: tallas "0OS" en vez de "OS" o "006" en vez de
+# "6", columnas que faltan, la marca escrita de dos formas.
+#
+# Por eso, para cada marca se declara UNA VEZ como esta armado su codigo, y
+# de ahi salen referencia, color y talla. Las otras columnas pasan a servir
+# solo para VERIFICAR: si no coinciden con el codigo, gana el codigo.
+#
+# Verificado sobre los 6 excels de prueba: el 100% de los codigos calza con
+# su estructura y da exactamente el mismo producto que antes.
+#
+# Cada patron necesita tres grupos con nombre: ref, color y talla. Se aplica
+# sobre el codigo TAL CUAL (con puntos y barras), y el codigo de producto es
+# todo lo que esta antes de la talla, limpio.
+#
+# Si una marca cambia el formato de sus codigos, se actualiza aca y listo.
+
+GRAMATICAS_TEXTO = {
+    # 30F2GTTT8L 001 OS        -> 10 + 3 + talla
+    "MK":   r"^(?P<ref>[A-Z0-9]{10})(?P<color>[A-Z0-9]{3})(?P<talla>.*)$",
+    # 50507803 O 271 L         -> 8 + H/O + 3 + talla (la letra dice la marca)
+    "HUGO": r"^(?P<ref>\d{8})[HO](?P<color>\d{3})(?P<talla>.*)$",
+    "BOSS": r"^(?P<ref>\d{8})[HO](?P<color>\d{3})(?P<talla>.*)$",
+    # D650ZB00022 C4005 35     -> 11 + 5 + talla
+    "GEOX": r"^(?P<ref>[A-Z0-9]{11})(?P<color>[A-Z0-9]{5})(?P<talla>.*)$",
+    # 409121 . 1 . 34          -> separado por puntos
+    "LANI": r"^(?P<ref>\d+)\.(?P<color>\d+)\.(?P<talla>.+)$",
+}
+
+# Por debajo de esta proporcion de codigos que calzan, se asume que el
+# formato del archivo cambio y se frena, en vez de procesar mal en silencio.
+MINIMO_QUE_CALZA = 0.80
+
+
+class Gramatica:
+    """Como esta armado el codigo de una marca."""
+
+    def __init__(self, patron):
+        self.re = re.compile(patron)
+
+    def partes(self, codigo):
+        """
+        Descompone un codigo. None si no tiene el formato esperado.
+
+        >>> g = Gramatica(GRAMATICAS_TEXTO["MK"])
+        >>> g.partes("30S5GEZB1L230OS")["cod"]
+        '30S5GEZB1L230'
+        >>> Gramatica(GRAMATICAS_TEXTO["LANI"]).partes("409121.1.34")["cod_color"]
+        '1'
+        """
+        crudo = str(codigo).strip().upper()
+        m = self.re.match(crudo)
+        if not m:
+            return None
+        return {
+            "referencia": limpio(m.group("ref")),
+            "cod_color": limpio(m.group("color")),
+            "talla": m.group("talla") or "",
+            "cod": limpio(crudo[:m.start("talla")]),
+        }
+
+    def clave(self, codigo, talla):
+        """El codigo de producto. Si no calza, se usa la regla general."""
+        p = self.partes(codigo)
+        return p["cod"] if p else codigo_producto(codigo, talla)
+
+
+def gramatica(marca):
+    """La estructura de codigo de una marca, o None si no esta declarada."""
+    patron = GRAMATICAS_TEXTO.get(str(marca).upper()) if marca else None
+    return Gramatica(patron) if patron else None
+
+
+def talla_a_mostrar(talla_columna, talla_codigo):
+    """
+    Que talla mostrar, cuando se tienen las dos.
+
+    Se prefiere la de la columna porque suele estar mejor escrita ("36.5"
+    contra el "365" del codigo), pero SOLO si coincide con la del codigo.
+    Si no coincide, la columna esta mal cargada y manda el codigo.
+
+    >>> talla_a_mostrar("36.5", "365")
+    '36.5'
+    >>> talla_a_mostrar("0OS", "OS")
+    'OS'
+    """
+    if talla_columna and limpio(talla_columna) == limpio(talla_codigo):
+        return talla_columna
+    return talla_codigo or talla_columna
+
+
+def control_previo(df, gram, marca=""):
+    """
+    Revisa el excel ANTES de buscar nada.
+
+    Dice cuantos codigos calzan con la estructura de la marca y en cuantos
+    las columnas cargadas a mano no coinciden con el codigo. Si calzan muy
+    pocos, frena: lo mas probable es que el formato del archivo cambio, y es
+    preferible avisar a procesar mal sin que nadie se entere.
+
+    Devuelve el resumen; lanza ValueError si hay que frenar.
+    """
+    if gram is None or len(df) == 0:
+        return {}
+
+    calza, distintos, no_calzan = 0, {"referencia": [], "cod_color": [], "talla": []}, []
+    for _, r in df.iterrows():
+        p = gram.partes(r["codigo"])
+        if not p:
+            no_calzan.append(r["codigo"])
+            continue
+        calza += 1
+        for campo in ("referencia", "cod_color"):
+            if campo in df.columns and r.get(campo):
+                if limpio(r[campo]).lstrip("0") != p[campo].lstrip("0"):
+                    distintos[campo].append(r["codigo"])
+        if r.get("talla") and limpio(r["talla"]) != limpio(p["talla"]):
+            distintos["talla"].append(f'{r["codigo"]} (dice "{r["talla"]}")')
+
+    total = len(df)
+    proporcion = calza / total
+    print(f"  control previo: {calza} de {total} codigos con el formato de "
+          f"{marca} ({proporcion:.0%})")
+    for campo, lista in distintos.items():
+        if lista:
+            print(f"    {len(lista)} con la columna de {campo} distinta al codigo "
+                  f"-> se usa el codigo  (ej: {lista[0]})")
+    if no_calzan:
+        print(f"    {len(no_calzan)} sin el formato de la marca "
+              f"(ej: {', '.join(map(str, no_calzan[:3]))})")
+
+    if proporcion < MINIMO_QUE_CALZA:
+        raise ValueError(
+            f"Solo {proporcion:.0%} de los codigos tiene el formato de {marca}. "
+            f"Lo mas probable es que el archivo sea de otra marca o que el "
+            f"formato haya cambiado. Revisar GRAMATICAS_TEXTO en comun.py.")
+
+    return {"calza": calza, "total": total, "distintos": distintos,
+            "no_calzan": no_calzan}
+
+
+def productos(df, clave=None, gram=None):
     """
     Colapsa las filas-talla en productos, agrupando por codigo_producto.
+
+    Con `gram` (la estructura de codigo de la marca), referencia, color y
+    talla salen del codigo y las columnas solo se usan si el codigo no calza.
+    Sin ella, se recorta la talla segun su columna, como siempre.
 
     Se agrupa por el codigo y NO por referencia+color porque en el excel de
     MK los cinturones traen un EAN distinto por talla en la columna
@@ -189,7 +340,20 @@ def productos(df):
     siempre uno solo.
     """
     df = df.copy()
-    df["cod"] = [codigo_producto(c, t) for c, t in zip(df["codigo"], df["talla"])]
+
+    if gram is not None:
+        # todo sale del codigo; las columnas solo se usan si el codigo no calza
+        partes = [gram.partes(c) for c in df["codigo"]]
+        df["cod"] = [p["cod"] if p else codigo_producto(c, t)
+                     for p, c, t in zip(partes, df["codigo"], df["talla"])]
+        for campo in ("referencia", "cod_color"):
+            vieja = df[campo] if campo in df.columns else [""] * len(df)
+            df[campo] = [p[campo] if p else v for p, v in zip(partes, vieja)]
+        df["talla"] = [talla_a_mostrar(t, p["talla"]) if p else t
+                       for p, t in zip(partes, df["talla"])]
+    else:
+        clave = clave or codigo_producto
+        df["cod"] = [clave(c, t) for c, t in zip(df["codigo"], df["talla"])]
 
     agg = {c: "first" for c in
            ("nombre", "color", "marca", "referencia", "cod_color", "ean", "coleccion")
@@ -205,12 +369,30 @@ def productos(df):
     return prod.merge(tallas, on="cod", how="left")
 
 
-def cargar(path, marca=None):
-    """Excel -> tabla de productos. Si se pasa marca, filtra por esa marca."""
-    prod = productos(unificar_columnas(leer(path)))
-    if marca:
-        prod = prod[prod["marca"].str.upper() == marca.upper()]
-    return prod.reset_index(drop=True)
+def _nombres(marca):
+    """'MK' o ['MK', 'MICHAEL KORS'] -> {'MK', 'MICHAEL KORS'}"""
+    if not marca:
+        return set()
+    if isinstance(marca, str):
+        return {marca.strip().upper()}
+    return {str(m).strip().upper() for m in marca}
+
+
+def cargar(path, marca=None, clave=None, gram=None, controlar=False):
+    """
+    Excel -> tabla de productos. Si se pasa marca, filtra por esa marca.
+
+    `marca` puede ser un nombre o varios: la misma marca llega escrita de
+    formas distintas segun el archivo ("MK" en los de estructura, "MICHAEL
+    KORS" en los de inventario).
+    """
+    df = unificar_columnas(leer(path))
+    nombres = _nombres(marca)
+    if nombres:
+        df = df[df["marca"].str.strip().str.upper().isin(nombres)]
+    if controlar and gram is not None:
+        control_previo(df, gram, next(iter(nombres), ""))
+    return productos(df, clave, gram).reset_index(drop=True)
 
 
 def _columna_real(df, canonico):
@@ -224,7 +406,7 @@ def _columna_real(df, canonico):
 
 
 def excel_encontrados(origen, rep, carpeta_marca, marca=None,
-                      nombre="encontrados.xlsx"):
+                      nombre="encontrados.xlsx", clave=None, gram=None):
     """
     Escribe un excel con las filas de los productos que SI bajaron fotos.
 
@@ -252,14 +434,14 @@ def excel_encontrados(origen, rep, carpeta_marca, marca=None,
     if col_codigo is None or col_talla is None:
         return None, 0, 0
 
-    cods = [codigo_producto(c, t)
-            for c, t in zip(crudo[col_codigo], crudo[col_talla])]
+    clave = gram.clave if gram is not None else (clave or codigo_producto)
+    cods = [clave(c, t) for c, t in zip(crudo[col_codigo], crudo[col_talla])]
     quedan = pd.Series(cods, index=crudo.index).isin(codigos)
 
     # Si se paso la marca, solo sus filas: cada marca tiene su propio excel.
     col_marca = _columna_real(crudo, "marca")
     if marca and col_marca is not None:
-        quedan &= crudo[col_marca].astype(str).str.strip().str.upper() == marca.upper()
+        quedan &= crudo[col_marca].astype(str).str.strip().str.upper().isin(_nombres(marca))
 
     sub = crudo[quedan]
     if len(sub) == 0:
@@ -288,7 +470,7 @@ def excel_encontrados(origen, rep, carpeta_marca, marca=None,
 
     sub.to_excel(destino, index=False)
     # se cuentan PRODUCTOS (codigo sin talla), no filas-talla
-    productos_dentro = {codigo_producto(c, t)
+    productos_dentro = {clave(c, t)
                         for c, t in zip(sub[col_codigo], sub[col_talla])}
     return destino, len(sub), len(productos_dentro)
 
