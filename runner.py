@@ -4,7 +4,7 @@ Corre todas las marcas de uno o varios excels, sin tener que acordarse de
 que script va con cual.
 
 Lee cada archivo, mira que marcas trae y llama al programa correspondiente.
-Si aparece una marca sin programa (por ejemplo FUSTER), lo avisa y sigue.
+Si aparece una marca sin programa, lo avisa y sigue.
 
 Se puede usar de dos formas: desde la terminal, o llamando a ejecutar()
 desde otro programa (es lo que hace la ventana, app.py).
@@ -25,8 +25,10 @@ import comun
 # proposito: asi PyInstaller los detecta al armar el .exe. Con importlib
 # no los veria y quedarian afuera del ejecutable.
 import geox
+import harmont
 import hugo
 import lanidor
+import liujo
 import mk
 
 
@@ -37,7 +39,8 @@ MODULOS = {
     "HUGO": hugo,
     "BOSS": hugo,        # el mismo archivo cubre las dos
     "MK":   mk,
-    "MICHAEL KORS": mk,  # asi viene en los excels de inventario
+    "LIUJO": liujo,
+    "HARMONT": harmont,
 }
 
 # Marcas que un mismo modulo resuelve en una sola corrida.

@@ -275,9 +275,12 @@ talla:
 | Marca | Estructura | Ejemplo |
 |---|---|---|
 | MK | 10 de referencia + 3 de color + talla | `30F2GTTT8L` `001` `OS` |
-| HUGO / BOSS | 8 + letra H u O + 3 de color + talla | `50507803` `O` `271` `L` |
+| HUGO / BOSS | 8 + una letra (H, O, B…) + 3 de color + talla | `50507803` `O` `271` `L` |
 | Geox | 11 de referencia + 5 de color + talla | `D650ZB00022` `C4005` `35` |
 | Lanidor | separado por puntos | `409121` `.1.` `34` |
+| Liu Jo | 11 de referencia + 5 de color + talla | `2F3073T0300` `61735` `TU` |
+| Harmont (ropa) | 12 de referencia + 3 de color + talla | `CRP011013607` `400` `L` |
+| Harmont (zapatos, `EF…`) | todo menos la talla del final | `EFM252040A60A4` `42` |
 
 Las otras columnas pasan a servir **solo para verificar**. Si no coinciden
 con el código, gana el código y queda anotado.
@@ -288,7 +291,13 @@ Errores reales de las marcas que esto resuelve solo:
   `006` en vez de `6`. Recortando según esa columna se perdían dígitos del
   color.
 - **Columnas que faltan.** Ese mismo inventario no trae `REFERENCIA` ni
-  `COD.COLOR`. No hacen falta: están en el código.
+  `COD.COLOR`. No hacen falta: están en el código. El inventario de Hugo de
+  octubre ni siquiera trae `TALLA` (trae `TELA 2` en su lugar): la talla
+  también sale del código.
+- **La marca escrita de otra forma.** `LANIDOR`, `FUSTER` → Lanidor;
+  `MICHAEL KORS` → MK; `HUGO BOTRIS` → HUGO; `HUGO BOSS` → BOSS;
+  `HARMONT & BLAINE` → HARMONT. Están en
+  `ALIAS_MARCA` de `comun.py`; una variante nueva se agrega ahí.
 - **Columnas con otro dato.** En los cinturones de MK, la columna
   `REFERENCIA` trae un código de barras (`198654107135`) en vez del modelo
   (`MKWB557766`). Con la columna, esos productos no se encontraban.
@@ -377,8 +386,75 @@ fotos están en el HTML en `src` normal, en Adobe Scene7.
 - Pedir un ancho fijo agranda la foto: el propio sitio pide 1600 sobre un
   original de 1500. Se usa `fit=constrain`, que devuelve el original sin
   tocar.
-- El separador del código indica la marca: `O` es BOSS (`50507803O271`) y
-  `H` es HUGO (`50515604H055`).
+- La letra del medio del código indica la línea: `H` es HUGO
+  (`50515604H055`); `O` y `B` son BOSS (`50507803O271`, `50468362B001`).
+  No se usa para buscar la foto, así que el programa acepta cualquiera.
+
+### Liu Jo — `liujo.py`
+
+No hace falta abrir la ficha: el nombre de cada foto es el código de 16
+caracteres más el número de foto, y se arma solo:
+
+```
+https://www.liujo.com/on/demandware.static/-/Sites-liujo-master-catalog/
+    default/images/E-2F3073T030061735-1-N.jpeg
+```
+
+**Trampas:**
+- En la web la dirección trae una marca de versión (`dw2a0d4ee7`) distinta
+  en cada foto. No hace falta.
+- Esa dirección entrega la foto original, de un mega cada una. Se pide la
+  versión redimensionada a 2.000 px (`/dw/image/v2/...?sw=2000`), y si no
+  responde se baja la original y se achica al guardar.
+- **La numeración no se puede adivinar.** Una camisa iba del 1 al 7; los
+  bolsos empiezan en la 7 y saltan (7 y 8, 7 y 12, 7 y 13); un sombrero va
+  del 5 al 8. Cada regla armada sobre un caso falló con el siguiente. Por
+  eso se prueban **todos** los números del 1 al 20, en paralelo y sin
+  cortar en los huecos: un número que no existe es un 404 de 384 bytes.
+- **Hay fotos de productos despublicados.** Un bolso con la ficha en "not
+  found" tenía igual su foto en el catálogo. Por eso no se depende de la
+  ficha para saber si hay fotos.
+- **La ficha se usa para el orden.** Cuando existe, su carrusel dice cuál es
+  la portada, que no es la del número más bajo: en el sombrero es la 5 y en
+  los bolsos la 7.
+- **Buena parte del inventario ya no está publicado**, y en lo que se probó
+  esos productos tampoco tienen fotos en el catálogo. Que muchos salgan sin
+  fotos es esperable, no un error.
+
+### Harmont & Blaine — `harmont.py`
+
+La ficha es el código sin la talla:
+`https://www.harmontblaine.com/{código sin talla}.html`.
+
+**Estructura verificada** contra la estructura de Harmont 004-2026, que trae
+REFERENCIA, COD.COLOR y COD.TALLA por separado: los 371 códigos dan
+exactamente lo mismo que esas columnas (la columna rellena la talla con
+ceros, `00S`; el código no). Esa estructura no traía zapatos, así que el
+formato de los `EF…` todavía no está confirmado.
+
+Las fotos están en el catálogo de Salesforce, como MK y Liu Jo:
+
+```
+https://www.harmontblaine.com/on/demandware.static/-/Sites-harmont-m-catalog/
+    default/images/hi-res/CRR043013967M_808_1.jpg
+                          └─ ref 12 ──┘│ └color┘ └n┘
+                                       └ letra que el excel NO trae
+```
+
+- **El nombre de la foto no se puede armar solo**: después de la referencia
+  viene una letra (M, I, R…) que no está en el código del excel. Por eso los
+  nombres se **leen de la ficha**, en el orden del carrusel. Las fotos de
+  otros productos que aparecen en la ficha se descartan por referencia y
+  color.
+- Si la ficha no da nada (producto despublicado), prueba la foto 1 con cada
+  letra posible y, con la que responda, busca las demás.
+- Cada foto se pide en `hi-res` y, si no está, en `large`. La marca de
+  versión (`dw835b1dce`) no hace falta. Se achica a 2000 px de ancho.
+- La columna de color (TRAMA) viene muy sucia en este inventario
+  (`CAMICIA 3 TESSUTI, 201 BEIGE, XS`, `BIANCOS BIANCO`, `SUETER HARMONT
+  BLAINE`). Claude se queda solo con el color al traducir.
+- Para revisar un producto: `python harmont.py --diagnostico CODIGO`.
+  Guarda además el html de la ficha en `diagnostico-harmont-{código}.html`.
 
 ### Michael Kors — `mk.py`
 
@@ -444,6 +520,19 @@ padre también a los hijos, y como la mayoría de las referencias tienen un
 único color (23 de 25 en Hugo, 27 de 33 en Geox), las variaciones quedaban
 sin color casi siempre. Su archivo de Geox salió con **cero colores en 244
 filas**.
+
+**Tallas que se corrigen por marca** (solo en la columna de talla; el SKU
+queda como viene):
+
+| Marca | En el código | En el CSV |
+|---|---|---|
+| HUGO / BOSS (cuello de camisa) | `155` `157` `165` | `15.5` `15.75` `16.5` |
+| Harmont (relleno con ceros) | `00L` `0XS` `054` | `L` `XS` `54` |
+
+Los cinturones de Hugo (`85` … `105`, `110`) no se tocan: son centímetros.
+
+La categoría por la primera letra del código (D = Mujer, U = Hombre…) es
+**solo de Geox**. En las demás marcas la letra no significa eso.
 
 Se escribe en **CSV**, con el mismo formato que los archivos que ya se
 suben: sin BOM, separador coma, fin de línea CRLF y UTF-8.
@@ -671,6 +760,8 @@ repetidas, la hoja de revisión— ya está en `comun.py` y no hay que tocarlo.
 ├── lanidor.py
 ├── hugo.py            HUGO y BOSS
 ├── mk.py
+├── liujo.py
+├── harmont.py         Harmont & Blaine
 ├── woocommerce.py     arma el archivo de carga de la tienda
 ├── claude.py          detecta columnas y traduce colores (con cache)
 ├── .env.ejemplo       plantilla para la clave de Claude
@@ -685,7 +776,7 @@ que trae Python de fábrica. Tiene que poder abrirse antes de que las
 dependencias estén instaladas, porque una de sus funciones es instalarlas.
 `runner` se importa recién al apretar Descargar, dentro del hilo de trabajo.
 
-`runner.py` importa los cuatro módulos de marca **explícitamente** y no por
+`runner.py` importa los módulos de marca **explícitamente** y no por
 nombre. Es a propósito: así PyInstaller los detecta al armar el `.exe`.
 
 ---

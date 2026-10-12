@@ -100,13 +100,15 @@ ID_INICIAL = 300037320
 MARCAS = {
     "GEOX":   {"nombre": "Geox",          "carpeta": "Geox",        "sufijo": "geox-ecuador"},
     "LANI":   {"nombre": "Lanidor",       "carpeta": "Lanidor",     "sufijo": "lanidor-ecuador"},
-    "FUSTER": {"nombre": "Fuster",        "carpeta": "Fuster",      "sufijo": "fuster-ecuador"},
     "HUGO":   {"nombre": "Hugo",          "carpeta": "HUGO",        "sufijo": "hugo-ecuador"},
     "BOSS":   {"nombre": "Boss",          "carpeta": "BOSS",        "sufijo": "boss-ecuador"},
+    "LIUJO":  {"nombre": "Liu Jo",        "carpeta": "LiuJo",       "sufijo": "liujo-ecuador"},
     "MK":     {"nombre": "Michael Kors",  "carpeta": "MichaelKors", "sufijo": "michaelkors-ecuador",
                # como puede venir en la columna MARCA, y el largo fijo de la
                # referencia para sacarla del codigo si no hay columna aparte
                "alias": ["MK", "MICHAEL KORS"]},
+    "HARMONT": {"nombre": "Harmont & Blaine", "carpeta": "Harmont",
+                "sufijo": "harmontblaine-ecuador"},
 }
 
 # Categoria por la primera letra del codigo. Es la nomenclatura de Geox;
@@ -184,17 +186,40 @@ def precio(valor):
     return str(int(n)) if n == int(n) else f"{n:g}"
 
 
-def talla(valor):
-    """'36.0' -> '36'   |   '36.5' -> '36.5'   |   'O/S' -> 'O/S'"""
+def talla(valor, marca=""):
+    """
+    '36.0' -> '36'   |   '36.5' -> '36.5'   |   'O/S' -> 'O/S'
+
+    Y lo propio de cada marca, cuando la talla sale del codigo:
+
+    HUGO / BOSS — cuello de camisa. El codigo escribe la talla en pulgadas
+    sin el punto: 155 es 15.5 y 157 es 15 3/4 (asi lo confirma la columna
+    TALLA HB de la estructura de Hugo, que da 39 y 40). Solo se tocan los
+    numeros de 145 a 189 terminados en 5 o 7, para no confundir los
+    cinturones (85, 90 ... 105, 110, 115), que son centimetros.
+        155 -> 15.5    157 -> 15.75    165 -> 16.5    105 -> 105
+
+    HARMONT — el codigo rellena la talla con ceros a la izquierda.
+        00L -> L    0XS -> XS    054 -> 54
+    """
     t = str(valor).replace(",", ".").strip()
     if re.fullmatch(r"\d+\.0+", t):
         return str(int(float(t)))
+    m = comun.normalizar_marca(marca)
+    if m in ("HUGO", "BOSS"):
+        c = re.fullmatch(r"(1[4-8])([57])", t)
+        if c:
+            return f"{c.group(1)}.{'5' if c.group(2) == '5' else '75'}"
+    if m == "HARMONT" and len(t) > 1 and t.startswith("0"):
+        return t.lstrip("0") or "0"
     return t
 
 
-def categoria(cod, tipo=""):
+def categoria(cod, tipo="", marca=""):
+    # La primera letra solo dice la categoria en Geox. En otras marcas
+    # confunde: en Harmont la B es de Bermuda y la K de chaqueta, no de nino.
     letra = str(cod)[:1].upper()
-    if letra in CAT_LETRA:
+    if comun.normalizar_marca(marca) == "GEOX" and letra in CAT_LETRA:
         return CAT_LETRA[letra]
     if str(tipo).strip().upper() in TIPOS_MUJER:
         return "Mujer"
@@ -209,7 +234,7 @@ def sin_repetir(valores):
 # LECTURA
 # ===========================================================================
 
-def _columnas(df, usar_ia, clave=None):
+def _columnas(df, usar_ia, clave=None, con_estructura=False):
     """
     De que columna sale cada dato.
 
@@ -233,23 +258,36 @@ def _columnas(df, usar_ia, clave=None):
     # prueban primero los patrones inequivocos (COMPO, VESTI) y se saltean
     # las columnas que ya tienen otro rol asignado. Sin eso, la composicion
     # de la prenda se llenaria con codigos de producto.
+    #
+    # Cada dato tiene una LISTA de patrones, del mas seguro al menos seguro,
+    # y se prueba el primero en todas las columnas antes de pasar al
+    # siguiente. Con un solo patron "COMPO|VESTI" se tomaba la primera
+    # columna con VESTI, y en la estructura de Harmont esa es
+    # ART_ETIQUETA_VESTI (dice "HARMONT"), no ART_COMPO_VESTI.
     patrones = (
-        ("precio",   r"PREC|PRICE|PVP"),
-        ("material", r"COMPO|VESTI|TEJID|COMPOSIC|MATER"),
-        ("fit",      r"\bFIT\b|AJUST|CORTE"),
-        ("tipo",     r"GRUPO|TIPO|FAMIL"),
+        ("precio",   [r"PREC|PRICE|PVP"]),
+        ("material", [r"COMPO", r"TEJID|MATER"]),
+        ("fit",      [r"\bFIT\b|AJUST|CORTE"]),
+        ("tipo",     [r"GRUPO|TIPO|FAMIL"]),
     )
-    for canonico, patron in patrones:
-        if canonico in mapa:
-            continue
-        for c in df.columns:
-            if c in mapa.values():
-                continue
-            if re.search(patron, str(c).upper()):
-                mapa[canonico] = c
+    for canonico, lista in patrones:
+        for patron in lista:
+            if canonico in mapa:
                 break
+            for c in df.columns:
+                if c in mapa.values():
+                    continue
+                if re.search(patron, str(c).upper()):
+                    mapa[canonico] = c
+                    break
 
-    faltan = [c for c in ("codigo", "referencia", "nombre", "talla") if c not in mapa]
+    # Si la marca tiene la estructura de su codigo declarada, referencia y
+    # talla salen del codigo: que falten esas columnas no es problema y no
+    # hace falta preguntarle a nadie (inventario de Hugo de octubre: no trae
+    # ni REFERENCIA ni TALLA).
+    necesarias = ("codigo", "nombre") if con_estructura else \
+        ("codigo", "referencia", "nombre", "talla")
+    faltan = [c for c in necesarias if c not in mapa]
     if faltan and usar_ia and HAY_CLAUDE:
         print(f"  faltan columnas {faltan}: preguntando a Claude...")
         filas = df.head(claude.FILAS_MUESTRA).to_dict("records")
@@ -291,13 +329,14 @@ def construir(excel, marca, carpeta_fotos, base_url=BASE_URL,
     nombre_marca = cfg.get("nombre", marca.title())
 
     crudo = comun.leer(excel)
-    cols = _columnas(crudo, usar_ia, clave)
+    cols = _columnas(crudo, usar_ia, clave,
+                     con_estructura=comun.gramatica(marca) is not None)
 
     col_marca = cols.get("marca")
     if col_marca:
-        nombres = {n.upper() for n in cfg.get("alias", [marca])}
-        crudo = crudo[crudo[col_marca].astype(str).str.strip().str.upper()
-                      .isin(nombres)]
+        # el nombre de la marca se normaliza (LANIDOR -> LANI, MICHAEL KORS -> MK)
+        crudo = crudo[crudo[col_marca].map(comun.normalizar_marca)
+                      == comun.normalizar_marca(marca)]
     if len(crudo) == 0:
         return [], [f"El excel no tiene filas de {marca}."], {}
 
@@ -374,6 +413,34 @@ def construir(excel, marca, carpeta_fotos, base_url=BASE_URL,
             orden.append(ref)
         grupos[ref].append(r)
 
+    # UNA REFERENCIA, DOS LINEAS. En BOSS la misma referencia sale en dos
+    # lineas con los mismos colores: 50518304B100 y 50518304O100 son las dos
+    # "Relegant 6 M" blancas, pero de telas distintas. Juntas bajo un padre
+    # quedan dos variaciones "White / L" que WooCommerce no distingue. Si un
+    # grupo trae mas de una linea (lo que hay en el codigo entre la
+    # referencia y el color), se separa en un padre por linea:
+    # 50518304B y 50518304O. Los grupos de una sola linea no cambian.
+    def linea(r):
+        pr = partes_de(r)
+        cod, ref, col = pr["cod"], pr["ref"], pr["codcolor"]
+        if col and cod.startswith(ref) and cod.endswith(col):
+            return cod[len(ref):len(cod) - len(col)]
+        return ""
+
+    separados, orden_sep = {}, []
+    for ref in orden:
+        lineas = {}
+        for r in grupos[ref]:
+            lineas.setdefault(linea(r), []).append(r)
+        if len(lineas) == 1:
+            separados[ref] = grupos[ref]
+            orden_sep.append(ref)
+        else:
+            for ln, filas_ln in lineas.items():
+                separados[ref + ln] = filas_ln
+                orden_sep.append(ref + ln)
+    grupos, orden = separados, orden_sep
+
     # cuantas filas vamos a generar, para reservar los IDs de una vez
     total = sum(len(g) + (1 if len(g) > 1 else 0) for g in grupos.values())
     contador = contador or Contador()
@@ -399,14 +466,14 @@ def construir(excel, marca, carpeta_fotos, base_url=BASE_URL,
                 "sku": str(r[c_cod]).strip(),
                 "cod": cod_prod,
                 "codcolor": pr["codcolor"],
-                "talla": talla(pr["talla"]),
+                "talla": talla(pr["talla"], marca),
                 "color": color_de(r[c_col]) if c_col else "",
                 "material": material_de(r[c_mat]) if c_mat else "",
                 "fit": str(r[c_fit]).strip().capitalize() if c_fit else "",
                 "nombre": titulo(r[c_nom]) if c_nom else "",
                 "precio": precio(r[c_pre]) if c_pre else "",
                 "urls": SEP.join(f"{base_url.rstrip('/')}/{a}" for a in archivos),
-                "cat": categoria(cod_prod, r[c_tip] if c_tip else ""),
+                "cat": categoria(cod_prod, r[c_tip] if c_tip else "", marca),
             })
 
         # los que no tienen ninguna foto no van al archivo de carga
@@ -692,7 +759,7 @@ def main(argv=None):
     if graves:
         print(f"\n  {len(graves)} problemas GRAVES. No escribo el archivo: "
               f"subirlo asi rompe productos en la tienda.")
-        print("  Corregilos y volve a correr.")
+        print("  Corrígelos y vuelve a correr.")
         return
 
     salida = args.salida or (carpeta / f"woocommerce_{cfg.get('sufijo', marca.lower())}"

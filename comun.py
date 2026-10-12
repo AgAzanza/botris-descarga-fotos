@@ -45,13 +45,19 @@ COLUMNAS = {
     "marca":      ["COD.MARCA", "MARCA"],
     "referencia": ["REFERENCIA", "MATERIAL"],   # Hugo la llama MATERIAL
     "cod_color":  ["COD.COLOR"],
-    "color":      ["COLOR", "COLOR LETRAS", "TRAMA"],
+    "color":      ["COLOR", "COLOR LETRAS", "TRAMA", "ART_TRAMA_VESTI"],
     "talla":      ["COD.TALLA", "TALLA", "TALLA HB"],
     "ean":        ["COD.BARRA"],
     "coleccion":  ["COD.COLECCION", "COLECCION", "COLECCIÓN"],
 }
 
-OBLIGATORIAS = ["codigo", "nombre", "marca", "talla"]
+OBLIGATORIAS = ["codigo", "nombre", "marca"]
+
+# La talla NO es obligatoria: todas las marcas tienen declarada la estructura
+# de su codigo (GRAMATICAS_TEXTO, mas abajo) y la talla sale de ahi. Hay
+# inventarios que no traen columna de talla (el de Hugo de octubre trae
+# "TELA 2" en su lugar) y antes eso frenaba todo, o peor: Claude podia
+# confundir otra columna con la talla.
 
 
 def leer(path):
@@ -69,6 +75,52 @@ def leer(path):
                        dtype=str, keep_default_na=False)
     df.columns = [str(c).strip() for c in df.columns]
     return df
+
+
+# ===========================================================================
+# NOMBRE DE LA MARCA
+# ===========================================================================
+#
+# La columna MARCA la escribe una persona, y la misma marca llega escrita de
+# formas distintas segun el archivo: "LANI" en los de estructura y "LANIDOR"
+# en los de inventario; "MK" y "MICHAEL KORS".
+#
+# Se normaliza UNA VEZ al leer el excel, y todo lo demas (el runner, los
+# programas de marca, el excel de encontrados, el CSV) ve siempre el nombre
+# corto. Cuando aparezca otra variante, se agrega aca y listo.
+#
+# FUSTER SE TRATA COMO LANIDOR. Sus productos se buscan en el sitio de
+# Lanidor y sus codigos siguen la misma estructura (verificado: los 33
+# codigos de Fuster de los archivos de prueba calzan al 100%). Por eso van
+# juntos: misma carpeta, mismas fotos, mismo CSV.
+
+ALIAS_MARCA = {
+    "LANIDOR": "LANI",
+    "FUSTER": "LANI",
+    "PABLO FUSTER": "LANI",
+    "MICHAEL KORS": "MK",
+    # Inventario de Hugo (oct): la linea HUGO viene como "HUGO BOTRIS" y la
+    # linea BOSS como "HUGO BOSS" (sus codigos traen B u O, nunca H).
+    "HUGO BOTRIS": "HUGO",
+    "HUGO BOSS": "BOSS",
+    "HARMONT & BLAINE": "HARMONT",
+    "HARMONT AND BLAINE": "HARMONT",
+    "HARMONT Y BLAINE": "HARMONT",
+    "HARMONT BLAINE": "HARMONT",
+    "H&B": "HARMONT",
+    "HARM": "HARMONT",       # asi viene en COD.MARCA de la estructura
+}
+
+
+def normalizar_marca(valor):
+    """
+    >>> normalizar_marca(" Lanidor ")
+    'LANI'
+    >>> normalizar_marca("GEOX")
+    'GEOX'
+    """
+    v = str(valor).strip().upper()
+    return ALIAS_MARCA.get(v, v)
 
 
 # Como se llama en Claude cada columna canonica nuestra.
@@ -133,6 +185,13 @@ def unificar_columnas(df):
         for canonico, real in _rescatar_con_claude(df, faltan).items():
             out[canonico] = df[real].astype(str).str.strip()
         faltan = [c for c in OBLIGATORIAS if c not in out.columns]
+
+    if "marca" in out.columns:
+        out["marca"] = out["marca"].map(normalizar_marca)
+
+    if "talla" not in out.columns:
+        print("  el archivo no trae columna de talla: se saca del codigo")
+        out["talla"] = ""
 
     if faltan:
         raise ValueError(
@@ -204,13 +263,28 @@ def codigo_producto(codigo, talla):
 GRAMATICAS_TEXTO = {
     # 30F2GTTT8L 001 OS        -> 10 + 3 + talla
     "MK":   r"^(?P<ref>[A-Z0-9]{10})(?P<color>[A-Z0-9]{3})(?P<talla>.*)$",
-    # 50507803 O 271 L         -> 8 + H/O + 3 + talla (la letra dice la marca)
-    "HUGO": r"^(?P<ref>\d{8})[HO](?P<color>\d{3})(?P<talla>.*)$",
-    "BOSS": r"^(?P<ref>\d{8})[HO](?P<color>\d{3})(?P<talla>.*)$",
+    # 50507803 O 271 L         -> 8 + letra + 3 + talla
+    # La letra es la linea (H, O, B y alguna suelta como C o P). No se usa
+    # para buscar la foto, asi que se acepta cualquiera.
+    "HUGO": r"^(?P<ref>\d{8})[A-Z](?P<color>\d{3})(?P<talla>.*)$",
+    "BOSS": r"^(?P<ref>\d{8})[A-Z](?P<color>\d{3})(?P<talla>.*)$",
     # D650ZB00022 C4005 35     -> 11 + 5 + talla
     "GEOX": r"^(?P<ref>[A-Z0-9]{11})(?P<color>[A-Z0-9]{5})(?P<talla>.*)$",
     # 409121 . 1 . 34          -> separado por puntos
     "LANI": r"^(?P<ref>\d+)\.(?P<color>\d+)\.(?P<talla>.+)$",
+    # 2F3073T0300 61735 TU     -> 11 + 5 + talla (los 16 son el producto)
+    "LIUJO": r"^(?P<ref>[A-Z0-9]{11})(?P<color>[A-Z0-9]{5})(?P<talla>.*)$",
+    # Harmont & Blaine tiene DOS formatos, y se prueban en este orden:
+    #   zapatos (empiezan con EF): todo menos la talla del final (40-46,
+    #     a veces con un 0 adelante). No traen un color separable.
+    #       EFM252040A60A4 42      EFM231040511 041
+    #   ropa: 12 de referencia + 3 de color + talla (a veces con ceros:
+    #     "00L", "0XS", "054").
+    #       CRP011013607 400 L     WKF034059442 804 034
+    "HARMONT": [
+        r"^(?P<ref>EF[A-Z0-9]*?)(?P<color>)(?P<talla>0?[34]\d)$",
+        r"^(?P<ref>[A-Z0-9]{12})(?P<color>[A-Z0-9]{3})(?P<talla>.*)$",
+    ],
 }
 
 # Por debajo de esta proporcion de codigos que calzan, se asume que el
@@ -222,7 +296,10 @@ class Gramatica:
     """Como esta armado el codigo de una marca."""
 
     def __init__(self, patron):
-        self.re = re.compile(patron)
+        # Un patron, o una lista que se prueba en orden (para marcas con
+        # mas de un formato de codigo, como Harmont: zapatos y ropa).
+        patrones = [patron] if isinstance(patron, str) else list(patron)
+        self.res = [re.compile(p) for p in patrones]
 
     def partes(self, codigo):
         """
@@ -235,7 +312,7 @@ class Gramatica:
         '1'
         """
         crudo = str(codigo).strip().upper()
-        m = self.re.match(crudo)
+        m = next((m for m in (r.match(crudo) for r in self.res) if m), None)
         if not m:
             return None
         return {
@@ -253,7 +330,7 @@ class Gramatica:
 
 def gramatica(marca):
     """La estructura de codigo de una marca, o None si no esta declarada."""
-    patron = GRAMATICAS_TEXTO.get(str(marca).upper()) if marca else None
+    patron = GRAMATICAS_TEXTO.get(normalizar_marca(marca)) if marca else None
     return Gramatica(patron) if patron else None
 
 
@@ -272,7 +349,14 @@ def talla_a_mostrar(talla_columna, talla_codigo):
     """
     if talla_columna and limpio(talla_columna) == limpio(talla_codigo):
         return talla_columna
+    # "00S" en la columna y "S" en el codigo (Harmont rellena con ceros):
+    # es la misma talla, y se muestra sin los ceros.
     return talla_codigo or talla_columna
+
+
+def misma_talla(a, b):
+    """Iguales ignorando puntos y ceros de relleno: '00S' = 'S', '046' = '46'."""
+    return limpio(a).lstrip("0") == limpio(b).lstrip("0")
 
 
 def control_previo(df, gram, marca=""):
@@ -300,7 +384,7 @@ def control_previo(df, gram, marca=""):
             if campo in df.columns and r.get(campo):
                 if limpio(r[campo]).lstrip("0") != p[campo].lstrip("0"):
                     distintos[campo].append(r["codigo"])
-        if r.get("talla") and limpio(r["talla"]) != limpio(p["talla"]):
+        if r.get("talla") and not misma_talla(r["talla"], p["talla"]):
             distintos["talla"].append(f'{r["codigo"]} (dice "{r["talla"]}")')
 
     total = len(df)
@@ -351,9 +435,17 @@ def productos(df, clave=None, gram=None):
             df[campo] = [p[campo] if p else v for p, v in zip(partes, vieja)]
         df["talla"] = [talla_a_mostrar(t, p["talla"]) if p else t
                        for p, t in zip(partes, df["talla"])]
-    else:
-        clave = clave or codigo_producto
+    elif clave is not None:
         df["cod"] = [clave(c, t) for c, t in zip(df["codigo"], df["talla"])]
+    else:
+        # Sin estructura explicita (el runner, que lee todas las marcas a la
+        # vez): se usa la de la marca de cada fila, si esta declarada.
+        grams = {m: gramatica(m) for m in df["marca"].unique()} \
+            if "marca" in df.columns else {}
+        marcas = df["marca"] if "marca" in df.columns else [""] * len(df)
+        df["cod"] = [grams[m].clave(c, t) if grams.get(m)
+                     else codigo_producto(c, t)
+                     for m, c, t in zip(marcas, df["codigo"], df["talla"])]
 
     agg = {c: "first" for c in
            ("nombre", "color", "marca", "referencia", "cod_color", "ean", "coleccion")
@@ -374,8 +466,8 @@ def _nombres(marca):
     if not marca:
         return set()
     if isinstance(marca, str):
-        return {marca.strip().upper()}
-    return {str(m).strip().upper() for m in marca}
+        return {normalizar_marca(marca)}
+    return {normalizar_marca(m) for m in marca}
 
 
 def cargar(path, marca=None, clave=None, gram=None, controlar=False):
@@ -431,17 +523,18 @@ def excel_encontrados(origen, rep, carpeta_marca, marca=None,
     crudo = leer(origen)
     col_codigo = _columna_real(crudo, "codigo")
     col_talla = _columna_real(crudo, "talla")
-    if col_codigo is None or col_talla is None:
+    if col_codigo is None:
         return None, 0, 0
+    tallas = crudo[col_talla] if col_talla is not None else [""] * len(crudo)
 
     clave = gram.clave if gram is not None else (clave or codigo_producto)
-    cods = [clave(c, t) for c, t in zip(crudo[col_codigo], crudo[col_talla])]
+    cods = [clave(c, t) for c, t in zip(crudo[col_codigo], tallas)]
     quedan = pd.Series(cods, index=crudo.index).isin(codigos)
 
     # Si se paso la marca, solo sus filas: cada marca tiene su propio excel.
     col_marca = _columna_real(crudo, "marca")
     if marca and col_marca is not None:
-        quedan &= crudo[col_marca].astype(str).str.strip().str.upper().isin(_nombres(marca))
+        quedan &= crudo[col_marca].map(normalizar_marca).isin(_nombres(marca))
 
     sub = crudo[quedan]
     if len(sub) == 0:
@@ -470,8 +563,9 @@ def excel_encontrados(origen, rep, carpeta_marca, marca=None,
 
     sub.to_excel(destino, index=False)
     # se cuentan PRODUCTOS (codigo sin talla), no filas-talla
+    tallas_sub = sub[col_talla] if col_talla is not None else [""] * len(sub)
     productos_dentro = {clave(c, t)
-                        for c, t in zip(sub[col_codigo], sub[col_talla])}
+                        for c, t in zip(sub[col_codigo], tallas_sub)}
     return destino, len(sub), len(productos_dentro)
 
 

@@ -44,7 +44,10 @@ USO
 
     python lanidor.py Lanidor.xls --limite 3
     python lanidor.py Lanidor.xls
-    python lanidor.py Lanidor.xls --marca FUSTER
+
+Los productos de FUSTER (o PABLO FUSTER) van junto con los de Lanidor: se
+buscan en el mismo sitio, sus codigos tienen la misma estructura y quedan
+en la misma carpeta. Ver ALIAS_MARCA en comun.py.
 """
 
 import argparse
@@ -105,7 +108,6 @@ CARPETA = "Lanidor"
 
 # Sufijo de los archivos de imagen (ver comun.nombre_foto).
 SUFIJO = "lanidor-ecuador"
-SUFIJOS = {"LANI": "lanidor-ecuador", "FUSTER": "fuster-ecuador"}
 
 BUSQUEDA = "https://www.lanidor.com/listaprodutos.aspx/getlistaProdutos"
 FICHA = "https://www.lanidor.com{path}"
@@ -269,7 +271,7 @@ def main(argv=None):
     ap.add_argument("--salida", type=Path, default=Path("fotos"))
     ap.add_argument("--limite", type=int, default=None)
     ap.add_argument("--marca", default=MARCA,
-                    help="LANI (por defecto) o FUSTER")
+                    help="por defecto LANI, que incluye a FUSTER")
     ap.add_argument("--forzar", action="store_true")
     ap.add_argument("--cookies", default=None,
                     help="cookies del navegador si Cloudflare sigue bloqueando. "
@@ -280,7 +282,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     # referencia, color y talla salen del codigo (ver comun.GRAMATICAS_TEXTO).
-    # FUSTER no tiene estructura declarada: usa las columnas como antes.
+    # FUSTER entra aca tambien: comun lo normaliza como LANI al leer.
     prod = comun.cargar(args.excel, marca=args.marca,
                         gram=comun.gramatica(args.marca), controlar=True)
     if len(prod) == 0:
@@ -290,8 +292,8 @@ def main(argv=None):
     if args.limite:
         prod = prod.head(args.limite)
 
-    sufijo = SUFIJOS.get(args.marca.upper(), f"{args.marca.lower()}-ecuador")
-    carpeta = args.salida / (CARPETA if args.marca == MARCA else args.marca.title())
+    sufijo = SUFIJO
+    carpeta = args.salida / CARPETA
     carpeta.mkdir(parents=True, exist_ok=True)
 
     refs = prod["referencia"].nunique()

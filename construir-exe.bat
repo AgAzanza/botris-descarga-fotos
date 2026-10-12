@@ -41,6 +41,7 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed ^
     --hidden-import runner --hidden-import comun ^
     --hidden-import geox --hidden-import lanidor ^
     --hidden-import hugo --hidden-import mk ^
+    --hidden-import liujo --hidden-import harmont ^
     app.py
 
 if errorlevel 1 (

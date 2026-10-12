@@ -149,7 +149,7 @@ def _pedir(prompt, max_tokens=2000, clave=None, sistema=None,
     clave = clave or leer_clave()
     if not clave:
         raise SinClave(
-            "Falta la clave de Claude. Poné un archivo .env al lado del "
+            "Falta la clave de Claude. Pon un archivo .env al lado del "
             "programa con:\n    ANTHROPIC_API_KEY=sk-ant-...")
 
     cuerpo = {
@@ -214,6 +214,14 @@ def _json_de(texto):
             return json.loads(intento)
         except json.JSONDecodeError as e:
             ultimo = e
+
+    # 5. RESPUESTA CORTADA. Si el modelo se quedo sin espacio a mitad de
+    # camino ("Unterminated string"), el JSON no cierra, pero los pares
+    # anteriores al corte estan enteros: se rescatan esos. Lo que falte se
+    # vuelve a pedir la proxima vez, porque no queda en el cache.
+    pares = re.findall(r'"((?:[^"\\]|\\.)*)"\s*:\s*"((?:[^"\\]|\\.)*)"', t)
+    if pares:
+        return {json.loads(f'"{k}"'): json.loads(f'"{v}"') for k, v in pares}
     raise ultimo
 
 
@@ -221,7 +229,7 @@ def _json_de(texto):
 # 1. QUE SIGNIFICA CADA COLUMNA
 # ===========================================================================
 
-SISTEMA = ("Sos un asistente que clasifica datos de archivos de productos de "
+SISTEMA = ("Eres un asistente que clasifica datos de archivos de productos de "
            "moda. Respondes SOLO con JSON valido, sin markdown ni comentarios.")
 
 
@@ -276,7 +284,7 @@ def detectar_columnas(filas, clave=None, forzar=False):
         "que enganan: en algunos archivos la columna llamada MATERIAL no es "
         "el material sino la referencia del producto. Guiate por los VALORES, "
         "no por el nombre.\n\n"
-        "Devolve exactamente este JSON, con el NOMBRE EXACTO de la columna "
+        "Devuelve exactamente este JSON, con el NOMBRE EXACTO de la columna "
         "o null si no existe:\n"
         "{\n"
         '  "col_sku": "codigo unico de cada variacion (incluye la talla)",\n'
@@ -310,7 +318,13 @@ REGLAS_COLOR = (
     "- Combinaciones con /: 'NAVY/RED' -> 'Azul/Rojo'\n"
     "- Patrones: PRINTED->Estampado, STRIPES->Rayas, FLORAL->Floral, "
     "LEOPARD->Leopardo\n"
-    "- Si ya esta en espanol, dejarlo con mayuscula inicial"
+    "- Si ya esta en espanol, dejarlo con mayuscula inicial\n"
+    "- El texto lo escribe una persona y a veces trae otras cosas ademas del "
+    "color (nombre de la prenda, un codigo, la talla): devolver SOLO el color. "
+    "'CAMICIA 3 TESSUTI, 201 BEIGE, XS' -> 'Beige'\n"
+    "- Palabras repetidas o mal escritas son un solo color: 'BIANCOS BIANCO' "
+    "-> 'Blanco', 'BLU - BLU' -> 'Azul'\n"
+    "- Si no hay ningun color ('SUETER HARMONT BLAINE'), devolver ''"
 )
 
 REGLAS_MATERIAL = (
@@ -342,12 +356,24 @@ def _traducir(valores, que, reglas, clave=None, forzar=False):
             f"Traduce estos {que} de productos de moda al espanol.\n\n"
             f"REGLAS:\n{reglas}\n\n"
             f"VALORES: {json.dumps(lote, ensure_ascii=False)}\n\n"
-            'Devolve un JSON {"ORIGINAL": "traduccion"} con TODOS los valores '
+            'Devuelve un JSON {"ORIGINAL": "traduccion"} con TODOS los valores '
             "de la lista, sin omitir ninguno."
         )
-        texto, _ = _pedir(prompt, 60 + 22 * len(lote), clave, SISTEMA)
+        # La respuesta repite cada valor original como clave, asi que el
+        # espacio tiene que alcanzar para el texto entero, no un fijo por
+        # valor: con colores largos ("CAMICIA 3 TESSUTI, 201 BEIGE, XS") el
+        # fijo de antes se quedaba corto y la respuesta llegaba cortada.
+        espacio = min(8000, 200 + 20 * len(lote) + sum(len(v) for v in lote) // 2)
+        texto, _ = _pedir(prompt, espacio, clave, SISTEMA)
         ULTIMO["llamadas"] += 1
-        for k, v in _json_de(texto).items():
+        try:
+            traducidos = _json_de(texto)
+        except ValueError as e:
+            # un lote que falla no tira abajo los demas ni lo ya cacheado
+            print(f"  Claude: un lote de {que} no se pudo leer ({str(e)[:60]}); "
+                  f"esos {len(lote)} quedan sin traducir")
+            continue
+        for k, v in traducidos.items():
             cache[str(k).strip().upper()] = str(v).strip()
 
     if faltan:
